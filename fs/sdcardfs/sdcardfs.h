@@ -42,11 +42,7 @@
 #include <linux/types.h>
 #include <linux/security.h>
 #include <linux/string.h>
-#include <linux/ratelimit.h>
 #include "multiuser.h"
-
-/* the file system magic number */
-#define SDCARDFS_SUPER_MAGIC   0xb550ca10
 
 /* the file system name */
 #define SDCARDFS_NAME "sdcardfs"
@@ -70,59 +66,40 @@
 #define AID_SDCARD_ALL    1035	/* access all users external storage */
 
 #define AID_PACKAGE_INFO  1027
-#define AID_EVERYBODY     9997
 
-#define fix_derived_permission(x, mask)	\
+#define fix_derived_permission(x)	\
 	do {						\
 		(x)->i_uid = SDCARDFS_I(x)->d_uid;	\
 		(x)->i_gid = SDCARDFS_I(x)->d_gid;	\
-	SDCARDFS_I(x)->d_mode = 0775 &  ~mask; \
-	if (SDCARDFS_I(x)->perm == PERM_PRE_ROOT) \
-	{ \
-	    SDCARDFS_I(x)->d_mode = 0711; \
-	} \
-	else if (SDCARDFS_I(x)->d_under_android) \
-	{ \
-	    if (SDCARDFS_I(x)->d_gid == AID_SDCARD_RW) { \
-		SDCARDFS_I(x)->d_mode = SDCARDFS_I(x)->d_mode & ~0006; \
-	    } else { \
-		SDCARDFS_I(x)->d_mode = SDCARDFS_I(x)->d_mode & ~0007; \
-	    } \
-	} \
-	(x)->i_mode = ((x)->i_mode & S_IFMT) | SDCARDFS_I(x)->d_mode; \
+		(x)->i_mode = ((x)->i_mode & S_IFMT) | SDCARDFS_I(x)->d_mode;\
 	} while (0)
 
-
 /* OVERRIDE_CRED() and REVERT_CRED()
- *	OVERRID_CRED()
- *		backup original task->cred
- *		and modifies task->cred->fsuid/fsgid to specified value.
+ * 	OVERRID_CRED()
+ * 		backup original task->cred
+ * 		and modifies task->cred->fsuid/fsgid to specified value.
  *	REVERT_CRED()
- *		restore original task->cred->fsuid/fsgid.
+ * 		restore original task->cred->fsuid/fsgid.
  * These two macro should be used in pair, and OVERRIDE_CRED() should be
  * placed at the beginning of a function, right after variable declaration.
  */
-#define OVERRIDE_CRED(sdcardfs_sbi, saved_cred)	\
-	saved_cred = override_fsids(sdcardfs_sbi->options.fs_low_uid, \
-								sdcardfs_sbi->options.fs_low_gid); \
+#define OVERRIDE_CRED(sdcardfs_sbi, saved_cred)		\
+	saved_cred = override_fsids(sdcardfs_sbi);	\
 	if (!saved_cred) { return -ENOMEM; }
 
 #define OVERRIDE_CRED_PTR(sdcardfs_sbi, saved_cred)	\
-	saved_cred = override_fsids(sdcardfs_sbi->options.fs_low_uid, \
-								sdcardfs_sbi->options.fs_low_gid); \
+	saved_cred = override_fsids(sdcardfs_sbi);	\
 	if (!saved_cred) { return ERR_PTR(-ENOMEM); }
-
-#define OVERRIDE_ROOT_CRED(saved_cred) \
-	saved_cred = override_fsids(0, 0); \
-	if (!saved_cred) { return -ENOMEM; }
 
 #define REVERT_CRED(saved_cred)	revert_fsids(saved_cred)
 
 #define DEBUG_CRED()		\
-	printk("KAKJAGI: %s:%d fsuid %d fsgid %d\n",	\
-		__FUNCTION__, __LINE__,			\
-		(int)current->cred->fsuid,		\
+	printk("KAKJAGI: %s:%d fsuid %d fsgid %d\n", 	\
+		__FUNCTION__, __LINE__, 		\
+		(int)current->cred->fsuid, 		\
 		(int)current->cred->fsgid);
+
+/* Android 4.4 support */
 
 /* Permission mode for a specific node. Controls how file permissions
  * are derived for children nodes. */
@@ -131,7 +108,7 @@ typedef enum {
 	PERM_INHERIT,
 	/* This node is one level above a normal root; used for legacy layouts
 	 * which use the first level to represent user_id. */
-    PERM_PRE_ROOT,
+	PERM_LEGACY_PRE_ROOT,
 	/* This node is "/" */
 	PERM_ROOT,
 	/* This node is "/Android" */
@@ -140,28 +117,27 @@ typedef enum {
 	PERM_ANDROID_DATA,
 	/* This node is "/Android/obb" */
 	PERM_ANDROID_OBB,
-	/* This node is "/Android/media" */
-	PERM_ANDROID_MEDIA,
+	/* This node is "/Android/user" */
+	PERM_ANDROID_USER,
 } perm_t;
+
+/* Permissions structure to derive */
+typedef enum {
+	DERIVE_NONE,
+	DERIVE_LEGACY,
+	DERIVE_UNIFIED,
+} derive_t;
 
 typedef enum {
 	LOWER_FS_EXT4,
 	LOWER_FS_FAT,
-    LOWER_FS_EXFAT,
 } lower_fs_t;
-
-typedef enum {
-	TYPE_NONE,
-	TYPE_DEFAULT,
-	TYPE_READ,
-	TYPE_WRITE,
-} type_t;
 
 struct sdcardfs_sb_info;
 struct sdcardfs_mount_options;
 
 /* Do not directly use this function. Use OVERRIDE_CRED() instead. */
-const struct cred * override_fsids(uid_t fsuid, gid_t fsgid);
+const struct cred * override_fsids(struct sdcardfs_sb_info* sbi);
 /* Do not directly use this function, use REVERT_CRED() instead. */
 void revert_fsids(const struct cred * old_cred);
 
@@ -183,10 +159,9 @@ extern void sdcardfs_destroy_dentry_cache(void);
 extern int new_dentry_private_data(struct dentry *dentry);
 extern void free_dentry_private_data(struct dentry *dentry);
 extern struct dentry *sdcardfs_lookup(struct inode *dir, struct dentry *dentry,
-				    unsigned int flags);
+				    struct nameidata *nd);
 extern int sdcardfs_interpose(struct dentry *dentry, struct super_block *sb,
 			    struct path *lower_path);
-extern long sdcardfs_propagate_unlink(struct inode *parent, char* pathname);
 
 /* file private data */
 struct sdcardfs_file_info {
@@ -197,12 +172,14 @@ struct sdcardfs_file_info {
 /* sdcardfs inode data in memory */
 struct sdcardfs_inode_info {
 	struct inode *lower_inode;
+	/* state derived based on current position in hierachy
+	 * caution: d_mode does not include file types
+	 */
 	perm_t perm;
 	userid_t userid;
 	uid_t d_uid;
 	gid_t d_gid;
 	mode_t d_mode;
-    bool d_under_android;
 
 	struct inode vfs_inode;
 };
@@ -217,15 +194,11 @@ struct sdcardfs_dentry_info {
 struct sdcardfs_mount_options {
 	uid_t fs_low_uid;
 	gid_t fs_low_gid;
-    uid_t userid;
-    gid_t  sdfs_gid;
-    mode_t sdfs_mask;
-    bool multi_user;
-	uid_t owner_user;
+	gid_t write_gid;
+	int split_perms;
+	derive_t derive;
 	lower_fs_t lower_fs;
 	unsigned int reserved_mb;
-	char *label;
-	type_t type;
 };
 
 /* sdcardfs super-block data in memory */
@@ -238,7 +211,6 @@ struct sdcardfs_sb_info {
 	char *obbpath_s;
 	struct path obbpath;
 	void *pkgl_id;
-	char *devpath;
 };
 
 /*
@@ -282,19 +254,6 @@ static inline struct inode *sdcardfs_lower_inode(const struct inode *i)
 static inline void sdcardfs_set_lower_inode(struct inode *i, struct inode *val)
 {
 	SDCARDFS_I(i)->lower_inode = val;
-}
-
-/* copy the inode attrs from src to dest except uid and gid */
-static inline void sdcardfs_copy_inode_attr(struct inode *dest, const struct inode *src)
-{
-    dest->i_mode = src->i_mode;
-    dest->i_rdev = src->i_rdev;
-    dest->i_atime = src->i_atime;
-    dest->i_mtime = src->i_mtime;
-    dest->i_ctime = src->i_ctime;
-    dest->i_blkbits = src->i_blkbits;
-    dest->i_flags = src->i_flags;
-    set_nlink(dest, src->i_nlink);
 }
 
 /* superblock to lower superblock */
@@ -404,24 +363,20 @@ static inline void sdcardfs_put_real_lower(const struct dentry *dent,
 }
 
 /* for packagelist.c */
+extern int get_caller_has_rw_locked(void *pkgl_id, derive_t derive);
 extern appid_t get_appid(void *pkgl_id, const char *app_name);
 extern int check_caller_access_to_name(struct inode *parent_node, const char* name,
-					int w_ok);
+                                        derive_t derive, int w_ok, int has_rw);
 extern int open_flags_to_access_mode(int open_flags);
-extern void packagelist_lock(void *pkgl_id);
-extern void packagelist_unlock(void *pkgl_id);
-extern void * packagelist_create(const char *dev_name, struct super_block *sb);
+extern void * packagelist_create(gid_t write_gid);
 extern void packagelist_destroy(void *pkgl_id);
 extern int packagelist_init(void);
 extern void packagelist_exit(void);
 
 /* for derived_perm.c */
 extern void setup_derived_state(struct inode *inode, perm_t perm,
-	    userid_t userid, uid_t uid, gid_t gid, bool under_android);
-extern void setup_derived_state_for_multiuser_gid(struct inode *inode, perm_t perm,
-	    userid_t userid, uid_t uid, gid_t gid, bool under_android);
+			userid_t userid, uid_t uid, gid_t gid, mode_t mode);
 extern void get_derived_permission(struct dentry *parent, struct dentry *dentry);
-extern void get_derived_permission_recursive(struct dentry *parent);
 extern void update_derived_permission(struct dentry *dentry);
 extern int need_graft_path(struct dentry *dentry);
 extern int is_base_obbpath(struct dentry *dentry);
@@ -446,27 +401,29 @@ static inline int prepare_dir(const char *path_s, uid_t uid, gid_t gid, mode_t m
 {
 	int err;
 	struct dentry *dent;
-	struct path path;
 	struct iattr attrs;
+	struct nameidata nd;
 
-	dent = kern_path_create(AT_FDCWD, path_s, &path, LOOKUP_DIRECTORY);
+	err = kern_path_parent(path_s, &nd);
+	if (err) {
+		if (err == -EEXIST)
+			err = 0;
+		goto out;
+	}
 
+	dent = lookup_create(&nd, 1);
 	if (IS_ERR(dent)) {
 		err = PTR_ERR(dent);
 		if (err == -EEXIST)
 			err = 0;
-		return err;
+		goto out_unlock;
 	}
 
-	err = mnt_want_write(path.mnt);
-	if (err)
-		goto out;
-
-	err = vfs_mkdir(path.dentry->d_inode, dent, mode);
+	err = vfs_mkdir(nd.path.dentry->d_inode, dent, mode);
 	if (err) {
 		if (err == -EEXIST)
 			err = 0;
-		goto out_drop;
+		goto out_dput;
 	}
 
 	attrs.ia_uid = uid;
@@ -476,14 +433,15 @@ static inline int prepare_dir(const char *path_s, uid_t uid, gid_t gid, mode_t m
 	notify_change(dent, &attrs);
 	mutex_unlock(&dent->d_inode->i_mutex);
 
-out_drop:
-	mnt_drop_write(path.mnt);
+out_dput:
+	dput(dent);
+
+out_unlock:
+	/* parent dentry locked by lookup_create */
+	mutex_unlock(&nd.path.dentry->d_inode->i_mutex);
+	path_put(&nd.path);
 
 out:
-	dput(dent);
-	/* parent dentry locked by kern_path_create */
-	mutex_unlock(&path.dentry->d_inode->i_mutex);
-	path_put(&path);
 	return err;
 }
 
@@ -506,11 +464,11 @@ static inline int check_min_free_space(struct dentry *dentry, size_t size, int d
 		sdcardfs_put_lower_path(dentry, &lower_path);
 
 		if (unlikely(err))
-			goto out_invalid;
+			return 0;
 
 		/* Invalid statfs informations. */
 		if (unlikely(statfs.f_bsize == 0))
-			goto out_invalid;
+			return 0;
 
 		/* if you are checking directory, set size to f_bsize. */
 		if (unlikely(dir))
@@ -521,39 +479,15 @@ static inline int check_min_free_space(struct dentry *dentry, size_t size, int d
 
 		/* not enough space */
 		if ((u64)size > avail)
-			goto out_nospc;
+			return 0;
 
 		/* enough space */
 		if ((avail - size) > (sbi->options.reserved_mb * 1024 * 1024))
 			return 1;
 
-		goto out_nospc;
+		return 0;
 	} else
 		return 1;
-
-out_invalid:
-    printk(KERN_INFO "statfs               : invalid return\n");
-    printk(KERN_INFO "vfs_statfs error#    : %d\n", err);
-    printk(KERN_INFO "statfs.f_type        : 0x%X\n", (u32)statfs.f_type);
-    printk(KERN_INFO "statfs.f_blocks      : %llu blocks\n", statfs.f_blocks);
-    printk(KERN_INFO "statfs.f_bfree       : %llu blocks\n", statfs.f_bfree);
-    printk(KERN_INFO "statfs.f_files       : %llu\n", statfs.f_files);
-    printk(KERN_INFO "statfs.f_ffree       : %llu\n", statfs.f_ffree);
-    printk(KERN_INFO "statfs.f_fsid.val[1] : 0x%X\n", (u32)statfs.f_fsid.val[1]);
-    printk(KERN_INFO "statfs.f_fsid.val[0] : 0x%X\n", (u32)statfs.f_fsid.val[0]);
-    printk(KERN_INFO "statfs.f_namelen     : %ld\n", statfs.f_namelen);
-    printk(KERN_INFO "statfs.f_frsize      : %ld\n", statfs.f_frsize);
-    printk(KERN_INFO "statfs.f_flags       : %ld\n", statfs.f_flags);
-    printk(KERN_INFO "sdcardfs reserved_mb : %u\n", sbi->options.reserved_mb);
-    if (sbi->devpath)
-        printk(KERN_INFO "sdcardfs source path : %s\n", sbi->devpath);
-
-out_nospc:
-    printk_ratelimited(KERN_INFO "statfs.f_bavail : %llu blocks / "
-                     "statfs.f_bsize : %ld bytes / "
-                     "required size : %llu byte\n"
-                ,statfs.f_bavail, statfs.f_bsize, (u64)size);
-    return 0;
 }
 
 #endif	/* not _SDCARDFS_H_ */

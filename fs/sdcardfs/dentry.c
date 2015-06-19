@@ -26,7 +26,7 @@
  *          0: tell VFS to invalidate dentry
  *          1: dentry is valid
  */
-static int sdcardfs_d_revalidate(struct dentry *dentry, unsigned int flags)
+static int sdcardfs_d_revalidate(struct dentry *dentry, struct nameidata *nd)
 {
 	int err = 1;
 	struct path parent_lower_path, lower_path;
@@ -35,7 +35,7 @@ static int sdcardfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 	struct dentry *lower_cur_parent_dentry = NULL;
 	struct dentry *lower_dentry = NULL;
 
-	if (flags & LOOKUP_RCU)
+	if (nd && nd->flags & LOOKUP_RCU)
 		return -ECHILD;
 
 	spin_lock(&dentry->d_lock);
@@ -74,18 +74,12 @@ static int sdcardfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 		goto out;
 	}
 
-	if (dentry == lower_dentry) {
-		err = 0;
-		panic("sdcardfs: dentry is equal to lower_dentry\n");
-		goto out;
-	}
-
 	if (dentry < lower_dentry) {
 		spin_lock(&dentry->d_lock);
-		spin_lock_nested(&lower_dentry->d_lock, DENTRY_D_LOCK_NESTED);
+		spin_lock(&lower_dentry->d_lock);
 	} else {
 		spin_lock(&lower_dentry->d_lock);
-		spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
+		spin_lock(&dentry->d_lock);
 	}
 
 	if (dentry->d_name.len != lower_dentry->d_name.len) {
@@ -182,6 +176,7 @@ static int sdcardfs_cmp_ci(const struct dentry *parent,
 const struct dentry_operations sdcardfs_ci_dops = {
 	.d_revalidate	= sdcardfs_d_revalidate,
 	.d_release	= sdcardfs_d_release,
-	.d_hash		= sdcardfs_hash_ci,
+	.d_hash 	= sdcardfs_hash_ci,
 	.d_compare	= sdcardfs_cmp_ci,
 };
+

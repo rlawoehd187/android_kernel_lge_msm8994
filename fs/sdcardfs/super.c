@@ -41,9 +41,6 @@ static void sdcardfs_put_super(struct super_block *sb)
 		path_put(&spd->obbpath);
 	}
 
-	if(spd->options.label)
-		kfree(spd->options.label);
-
 	/* decrement lower super references */
 	s = sdcardfs_lower_super(sb);
 	sdcardfs_set_lower_super(sb, NULL);
@@ -99,7 +96,7 @@ static int sdcardfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 static int sdcardfs_remount_fs(struct super_block *sb, int *flags, char *options)
 {
 	int err = 0;
-	sync_filesystem(sb);
+
 	/*
 	 * The VFS will take care of "ro" and "rw" flags among others.  We
 	 * can safely accept a few flags (RDONLY, MANDLOCK), and honor
@@ -125,7 +122,7 @@ static void sdcardfs_evict_inode(struct inode *inode)
 	struct inode *lower_inode;
 
 	truncate_inode_pages(&inode->i_data, 0);
-	clear_inode(inode);
+	end_writeback(inode);
 	/*
 	 * Decrement a reference to a lower_inode, which was incremented
 	 * by our read_inode when it was created initially.
@@ -183,48 +180,6 @@ void sdcardfs_destroy_inode_cache(void)
 		kmem_cache_destroy(sdcardfs_inode_cachep);
 }
 
-long sdcardfs_propagate_unlink(struct inode *parent, char* pathname) {
-	long ret = 0;
-	char *propagate_path = NULL;
-	struct sdcardfs_sb_info *sbi;
-	const struct cred *saved_cred = NULL;
-	/* old_fs is just temporary code to avoid the problem with memory address */
-	mm_segment_t old_fs;
-
-	sbi = SDCARDFS_SB(parent->i_sb);
-	propagate_path = kmalloc(PATH_MAX, GFP_KERNEL);
-	OVERRIDE_ROOT_CRED(saved_cred);
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	if (sbi->options.type != TYPE_NONE && sbi->options.type != TYPE_DEFAULT) {
-		snprintf(propagate_path, PATH_MAX, "/mnt/runtime/default/%s%s",
-				sbi->options.label, pathname);
-		ret = do_unlinkat(AT_FDCWD, propagate_path, false);
-	}
-
-	if (sbi->options.type != TYPE_NONE && sbi->options.type != TYPE_READ) {
-		snprintf(propagate_path, PATH_MAX, "/mnt/runtime/read/%s%s",
-				sbi->options.label, pathname);
-		ret = do_unlinkat(AT_FDCWD, propagate_path, false);
-	}
-
-	if (sbi->options.type != TYPE_NONE && sbi->options.type != TYPE_WRITE) {
-		snprintf(propagate_path, PATH_MAX, "/mnt/runtime/write/%s%s",
-				sbi->options.label, pathname);
-		ret = do_unlinkat(AT_FDCWD, propagate_path, false);
-	}
-
-	if (sbi->options.type != TYPE_NONE) {
-		snprintf(propagate_path, PATH_MAX, "/storage/%s%s",
-				sbi->options.label, pathname);
-		ret = do_unlinkat(AT_FDCWD, propagate_path, false);
-	}
-	set_fs(old_fs);
-	REVERT_CRED(saved_cred);
-	kfree(propagate_path);
-	return ret;
-}
-
 /*
  * Used only in nfs, to kill any pending RPC tasks, so that subsequent
  * code can actually succeed and won't leave tasks that need handling.
@@ -238,21 +193,22 @@ static void sdcardfs_umount_begin(struct super_block *sb)
 		lower_sb->s_op->umount_begin(lower_sb);
 }
 
-static int sdcardfs_show_options(struct seq_file *m, struct dentry *root)
+static int sdcardfs_show_options(struct seq_file *m, struct vfsmount *mnt)
 {
-	struct sdcardfs_sb_info *sbi = SDCARDFS_SB(root->d_sb);
+	struct sdcardfs_sb_info *sbi = SDCARDFS_SB(mnt->mnt_sb);
 	struct sdcardfs_mount_options *opts = &sbi->options;
 
 	if (opts->fs_low_uid != 0)
 		seq_printf(m, ",uid=%u", opts->fs_low_uid);
 	if (opts->fs_low_gid != 0)
 		seq_printf(m, ",gid=%u", opts->fs_low_gid);
-    if (opts->sdfs_gid != 0)
-	seq_printf(m, ",sdfs_gid=%u", opts->sdfs_gid);
-    if (opts->sdfs_mask != 0)
-	seq_printf(m, ",sdfs_mask%u", opts->sdfs_mask);
-    if (opts->multi_user != 0)
-	seq_printf(m, ",multi_user");
+
+	if (opts->derive == DERIVE_NONE)
+		seq_printf(m, ",derive=none");
+	else if (opts->derive == DERIVE_LEGACY)
+		seq_printf(m, ",derive=legacy");
+	else if (opts->derive == DERIVE_UNIFIED)
+		seq_printf(m, ",derive=unified");
 
 	if (opts->reserved_mb != 0)
 		seq_printf(m, ",reserved=%uMB", opts->reserved_mb);
@@ -270,7 +226,4 @@ const struct super_operations sdcardfs_sops = {
 	.alloc_inode	= sdcardfs_alloc_inode,
 	.destroy_inode	= sdcardfs_destroy_inode,
 	.drop_inode	= generic_delete_inode,
-#ifdef CONFIG_SDCARD_FS
-	.unlink_callback = sdcardfs_propagate_unlink,
-#endif
 };
