@@ -462,6 +462,8 @@ struct mdss_dsi_ctrl_pdata {
 	u32 reset_low_hold_ms;
 
 	bool dfps_status;	/* dynamic refresh status */
+
+	struct timespec wait_until_ts;
 };
 
 struct dsi_status_data {
