@@ -45,6 +45,7 @@ static int32_t msm_buf_mngr_get_buf(struct msm_buf_mngr_device *dev,
 	}
 	new_entry->session_id = buf_info->session_id;
 	new_entry->stream_id = buf_info->stream_id;
+	new_entry->index = new_entry->vb2_buf->v4l2_buf.index;
 	spin_lock_irqsave(&dev->buf_q_spinlock, flags);
 	list_add_tail(&new_entry->entry, &dev->buf_qhead);
 	spin_unlock_irqrestore(&dev->buf_q_spinlock, flags);
@@ -101,30 +102,14 @@ static int32_t msm_buf_mngr_buf_done(struct msm_buf_mngr_device *buf_mngr_dev,
 	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
 		if ((bufs->session_id == buf_info->session_id) &&
 			(bufs->stream_id == buf_info->stream_id) &&
-			(bufs->vb2_buf->v4l2_buf.index == buf_info->index)) {
-/*                                                      */
-#if 0 //QCT original
-			bufs->vb2_buf->v4l2_buf.sequence  = buf_info->frame_id;
-			bufs->vb2_buf->v4l2_buf.timestamp = buf_info->timestamp;
-			bufs->vb2_buf->v4l2_buf.reserved = buf_info->reserved;
+			(bufs->index == buf_info->index)) {
 			ret = buf_mngr_dev->vb2_ops.buf_done
 					(bufs->vb2_buf,
 						buf_info->session_id,
-						buf_info->stream_id);
-#else
-			ret = buf_mngr_dev->vb2_ops.buf_done
-					(bufs->vb2_buf,
-						buf_info->session_id,
-						buf_info->stream_id);
-			if(!ret) {
-				bufs->vb2_buf->v4l2_buf.sequence  = buf_info->frame_id;
-				bufs->vb2_buf->v4l2_buf.timestamp = buf_info->timestamp;
-				bufs->vb2_buf->v4l2_buf.reserved = buf_info->reserved;
-			} else {
-				pr_info("%s: failed to buf_done idx=%d state(%d)\n",__func__,bufs->vb2_buf->v4l2_buf.index, bufs->vb2_buf->state);
-			}
-#endif
-/*                                                      */
+						buf_info->stream_id,
+						buf_info->frame_id,
+						&buf_info->timestamp,
+						buf_info->reserved);
 			list_del_init(&bufs->entry);
 			kfree(bufs);
 			break;
@@ -146,7 +131,7 @@ static int32_t msm_buf_mngr_put_buf(struct msm_buf_mngr_device *buf_mngr_dev,
 	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
 		if ((bufs->session_id == buf_info->session_id) &&
 			(bufs->stream_id == buf_info->stream_id) &&
-			(bufs->vb2_buf->v4l2_buf.index == buf_info->index)) {
+			(bufs->index == buf_info->index)) {
 			ret = buf_mngr_dev->vb2_ops.put_buf(bufs->vb2_buf,
 				buf_info->session_id, buf_info->stream_id);
 			list_del_init(&bufs->entry);
