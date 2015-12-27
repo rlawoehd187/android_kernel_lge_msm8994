@@ -1045,9 +1045,6 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 #if defined(CONFIG_Z2_LGD_POLED_PANEL)
 	mdss_dsi_panel_img_tune_apply(IMG_TUNE_COUNT);
 #endif
-
-	mdss_livedisplay_update(ctrl, MODE_UPDATE_ALL);
-
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
 #if defined(CONFIG_Z2_LGD_POLED_PANEL)
