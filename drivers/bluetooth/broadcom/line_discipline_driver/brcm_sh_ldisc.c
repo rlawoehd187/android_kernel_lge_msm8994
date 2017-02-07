@@ -183,6 +183,16 @@ static struct nlmsghdr *nlh;
 static struct sk_buff *hcisnoop_skb_out;
 #endif
 
+/* HIC commands emitted by libbt which shall be ignored. */
+#define IGNORE_CMD_SIZE 14
+static const short IGNORE_CMDS[IGNORE_CMD_SIZE] =
+                                      {0x0c03, 0xfc45, 0xfc18, 0x0c14, 0xfc2e,
+                                       0xfc01, 0xfc27, 0xfc1c, 0xfc1e, 0xfc6d,
+                                       0xfc7e, 0xfc4e, 0x0c33, 0xfc4c};
+#define READ_CMD_DATA_LEN 33
+#define MAX_HCI_EVENT_LEN 37 // (+ 4 bytes header)
+
+static bool hci_filter_enabled = false;
 
 /*******************************************************************************
 **  Function forward-declarations and Function callback declarations
@@ -194,10 +204,6 @@ static struct hci_uart_proto *hup[HCI_UART_MAX_PROTO];
 
 static struct platform_device *brcm_plt_devices[MAX_BRCM_DEVICES];
 
-
-/*******************************************************************************
-**  Function forward-declarations and Function callback declarations
-*******************************************************************************/
 /**
   * internal functions to read chip name and
  * download patchram file
@@ -829,6 +835,11 @@ long brcm_sh_ldisc_register(struct sh_proto_s *new_proto)
         return -EPROTONOSUPPORT;
     }
 
+    if(new_proto->type == PROTO_SH_BT) {
+    	pr_err("enabling HCI Filter\n");
+    	hci_filter_enabled = true;
+    }
+
     /* check if protocol already registered */
     if (hu->list[new_proto->type] != NULL)
     {
@@ -1454,6 +1465,90 @@ long brcm_sh_ldisc_start(struct hci_uart *hu)
     } while (retry--);
 
     return err;
+}
+
+
+/*******************************************************************************
+**
+** Function - equals_hci_ev()
+**
+** Description - Checks if the received packet equals the given HCI command.
+**
+** Returns - true if the packet is the HCI cmd; false otherwise
+**
+*******************************************************************************/
+static bool pkt_equals_hci_ev(struct sk_buff *skb, uint16_t hci_event)
+{
+    unsigned char first_byte = (unsigned char)((hci_event >> 8) & 0xFF);
+    unsigned char second_byte = (unsigned char)(hci_event & 0xFF);
+
+    if(skb->len > 2 && (skb->data)[1] == second_byte && (skb->data)[2] == first_byte) {
+        return true;
+    }
+
+    return false;
+}
+
+
+/*******************************************************************************
+**
+** Function - ignore_hci_cmd()
+**
+** Description - Checks if the received packet is a HCI command that shall be
+**               ignored based on the IGNORE_CMDS array. Commands that shall be
+**               ignored are resets and configuration commands emmitted by libbt.
+**
+** Returns - true if the packet is HCI cmd to ignore; false otherwise
+**
+*******************************************************************************/
+static bool ignore_hci_cmd(struct sk_buff *skb)
+{
+    if(skb->len < 3 || (skb->len > 0 && (skb->data)[0] != 0x01)) {
+        return false;
+    }
+
+    static bool reset_received, is_bt_init, is_bt_init_end;
+    int cmd_cnt = 0;
+    unsigned char first_byte, second_byte;
+
+    for( ; cmd_cnt < IGNORE_CMD_SIZE; cmd_cnt++) {
+        if(pkt_equals_hci_ev(skb, IGNORE_CMDS[cmd_cnt])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/*******************************************************************************
+**
+** Function - hci_cfg_sequence_end()
+**
+** Description - Checks if the received packet is a HCI command that is the final
+**               command emmitted by libbt to configure the BT/FM chip. Internally,
+**               the HCI commands belonging to the config end sequence modify the
+**               state such that "true" is only returned for the matching
+**               sequence.
+**
+** Returns - true if the packet is HCI cmd of the configuration end sequence.
+**
+*******************************************************************************/
+static bool hci_cfg_sequence_end(struct sk_buff *skb) {
+    static u8 end_cmd_cnt = 0;
+
+    if(end_cmd_cnt == 0 && pkt_equals_hci_ev(skb, 0xfc01)) {
+        end_cmd_cnt++;
+        return false;
+    } else if (end_cmd_cnt == 1 && pkt_equals_hci_ev(skb, 0x0c03)) {
+        end_cmd_cnt++;
+        return false;
+    }  else if (end_cmd_cnt == 2 && pkt_equals_hci_ev(skb, 0x0c33)) {
+        end_cmd_cnt++;
+        return true;
+    }
+
+    end_cmd_cnt = 0;
+    return false;
 }
 
 
