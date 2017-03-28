@@ -8156,6 +8156,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 #ifdef CONFIG_LGE_PM_CHARGING_TEMP_SCENARIO
 	schedule_delayed_work(&chip->battemp_work, (60*HZ) / 2);
 #endif
+	update_usb_status(chip, is_usb_present(chip), false);
 	dump_regs(chip);
 	create_debugfs_entries(chip);
 #ifdef CONFIG_LGE_PM
