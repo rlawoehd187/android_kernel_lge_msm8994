@@ -100,9 +100,11 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 {
 	struct uid_entry *uid_entry;
 	struct task_struct *task, *temp;
+	struct user_namespace *user_ns = current_user_ns();
 	cputime_t utime;
 	cputime_t stime;
 	unsigned long bkt;
+	uid_t uid;
 
 	rt_mutex_lock(&uid_lock);
 
@@ -117,32 +119,18 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 
 	read_lock(&tasklist_lock);
 	do_each_thread(temp, task) {
-		uid_entry = find_or_register_uid(from_kuid_munged(
-			current_user_ns(), task_uid(task)));
+		uid = from_kuid_munged(user_ns, task_uid(task));
+		uid_entry = find_or_register_uid(uid);
 		if (!uid_entry) {
 			read_unlock(&tasklist_lock);
 			rt_mutex_unlock(&uid_lock);
 			pr_err("%s: failed to find the uid_entry for uid %d\n",
-				__func__, from_kuid_munged(current_user_ns(),
-				task_uid(task)));
+				__func__, uid);
 			return -ENOMEM;
 		}
-		/* if this task is exiting, we have already accounted for the
-		 * time and power.
-		 */
-
-		/* build error fix for CONFIG_UID_CPUTIME feature enable */
-		/*
-		if (task->cpu_power == ULLONG_MAX)
-			continue;
-		*/
 		task_cputime_adjusted(task, &utime, &stime);
 		uid_entry->active_utime += utime;
 		uid_entry->active_stime += stime;
-		/* build error fix for CONFIG_UID_CPUTIME feature enable */
-		/*
-		uid_entry->active_power += task->cpu_power;
-		*/
 	} while_each_thread(temp, task);
 	read_unlock(&tasklist_lock);
 
@@ -151,17 +139,6 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 							uid_entry->active_utime;
 		cputime_t total_stime = uid_entry->stime +
 							uid_entry->active_stime;
-		/* build error fix for CONFIG_UID_CPUTIME feature enable */
-		/*
-		unsigned long long total_power = uid_entry->power +
-							uid_entry->active_power;
-		seq_printf(m, "%d: %llu %llu %llu\n", uid_entry->uid,
-			(unsigned long long)jiffies_to_msecs(
-				cputime_to_jiffies(total_utime)) * USEC_PER_MSEC,
-			(unsigned long long)jiffies_to_msecs(
-				cputime_to_jiffies(total_stime)) * USEC_PER_MSEC,
-			total_power);
-		*/
 		seq_printf(m, "%d: %u %u\n", uid_entry->uid,
 						cputime_to_usecs(total_utime),
 						cputime_to_usecs(total_stime));
