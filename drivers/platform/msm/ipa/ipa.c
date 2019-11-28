@@ -29,6 +29,10 @@
 #include <linux/msm-bus-board.h>
 #include <linux/netdevice.h>
 #include <linux/delay.h>
+#if defined(CONFIG_LGE_CEC_US) || defined(CONFIG_MACH_MSM8994_Z2_GLOBAL_COM)
+#include <soc/qcom/subsystem_restart.h>
+#include <soc/qcom/subsystem_notif.h>
+#endif
 #include "ipa_i.h"
 #include "ipa_rm_i.h"
 
@@ -2923,6 +2927,26 @@ static void sps_event_cb(enum sps_callback_case event, void *param)
 	}
 	spin_unlock_irqrestore(&ipa_ctx->sps_pm.lock, flags);
 }
+#if defined(CONFIG_LGE_CEC_US) || defined(CONFIG_MACH_MSM8994_Z2_GLOBAL_COM)
+static int ssr_notifier_cb(struct notifier_block *this,
+			   unsigned long code,
+			   void *data)
+{
+	if (SUBSYS_BEFORE_POWERUP == code) {
+		pr_info("IPA received MPSS BEFORE_POWERUP\n");
+		if (!ipa_ctx->q6_proxy_clk_vote_valid) {
+			ipa_inc_client_enable_clks();
+			ipa_ctx->q6_proxy_clk_vote_valid = true;
+		}
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block ssr_notifier = {
+	.notifier_call = ssr_notifier_cb,
+};
+#endif
 /**
 * ipa_init() - Initialize the IPA Driver
 * @resource_p:	contain platform specific values from DST file
@@ -3408,7 +3432,9 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	ipa_ctx->q6_proxy_clk_vote_valid = true;
 
 	ipa_register_panic_hdlr();
-
+#if defined(CONFIG_LGE_CEC_US) || defined(CONFIG_MACH_MSM8994_Z2_GLOBAL_COM)
+	subsys_notif_register_notifier("modem", &ssr_notifier);
+#endif
 	pr_info("IPA driver initialization was successful.\n");
 
 	return 0;

@@ -836,6 +836,7 @@ static int mdss_mdp_rotator_config(struct msm_fb_data_type *mfd,
 	req->src.format = mdss_mdp_get_rotator_dst_format(req->src.format,
 		req->flags & MDP_ROT_90, req->flags & MDP_BWC_EN);
 
+	rot->req_data = *req;
 	rot->params_changed++;
 
 	return 0;

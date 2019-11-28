@@ -383,10 +383,10 @@ EXPORT_SYMBOL(vm_mmap);
 
 void kvfree(const void *addr)
 {
-	if (is_vmalloc_addr(addr))
-		vfree(addr);
-	else
-		kfree(addr);
+   if (is_vmalloc_addr(addr))
+       vfree(addr);
+   else
+       kfree(addr);
 }
 EXPORT_SYMBOL(kvfree);
 

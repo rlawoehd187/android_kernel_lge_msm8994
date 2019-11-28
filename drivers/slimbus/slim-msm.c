@@ -874,6 +874,7 @@ static int msm_slim_data_port_assign(struct msm_slim_ctrl *dev)
 	}
 	return data_ports;
 }
+
 /* Registers BAM h/w resource with SPS driver and initializes msgq endpoints */
 int msm_slim_sps_init(struct msm_slim_ctrl *dev, struct resource *bam_mem,
 			u32 pipe_reg, bool remote)

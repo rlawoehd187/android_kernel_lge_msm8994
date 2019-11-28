@@ -241,19 +241,12 @@ int set_bypass_lp_div_mux_sel(struct mux_clk *clk, int sel)
 	pr_debug("bypass_lp_div mux set to %s mode\n",
 				sel ? "indirect" : "direct");
 
-	pr_debug("POST_DIVIDER_CONTROL = 0x%x\n",
-		MDSS_PLL_REG_R(dsi_pll_res->pll_base,
-			MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL));
-
 	reg_data = MDSS_PLL_REG_R(dsi_pll_res->pll_base,
 			MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL);
 	reg_data |= BIT(7);
 	MDSS_PLL_REG_W(dsi_pll_res->pll_base,
 			MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL,
-			reg_data | (sel << 5));
-	pr_debug("POST_DIVIDER_CONTROL = 0x%x\n",
-		MDSS_PLL_REG_R(dsi_pll_res->pll_base,
-			MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL));
+				reg_data | (sel << 5));
 
 	return 0;
 }
@@ -314,6 +307,8 @@ int ndiv_set_div(struct div_clk *clk, int div)
 	int rc, reg_data;
 	struct mdss_pll_resources *dsi_pll_res = clk->priv;
 
+	pr_debug("%d div=%i\n", __LINE__, div);
+
 	rc = mdss_pll_resource_enable(dsi_pll_res, true);
 	if (rc) {
 		pr_err("Failed to enable mdss dsi pll resources\n");
@@ -325,10 +320,6 @@ int ndiv_set_div(struct div_clk *clk, int div)
 	MDSS_PLL_REG_W(dsi_pll_res->pll_base,
 				MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL,
 				reg_data | div);
-
-	pr_debug("POST_DIVIDER_CONTROL = 0x%x\n",
-		MDSS_PLL_REG_R(dsi_pll_res->pll_base,
-			MMSS_DSI_PHY_PLL_POST_DIVIDER_CONTROL));
 
 	mdss_pll_resource_enable(dsi_pll_res, false);
 	return rc;
@@ -446,13 +437,9 @@ int hr_oclk3_set_div(struct div_clk *clk, int div)
 		return rc;
 	}
 
-	pr_debug("%d div = %d\n", __LINE__, div);
 	MDSS_PLL_REG_W(dsi_pll_res->pll_base,
 				MMSS_DSI_PHY_PLL_HR_OCLK3_DIVIDER,
 				(div - 1));
-	pr_debug("%s: HR_OCLK3_DIVIDER = 0x%x\n", __func__,
-		MDSS_PLL_REG_R(dsi_pll_res->pll_base,
-			MMSS_DSI_PHY_PLL_HR_OCLK3_DIVIDER));
 
 	mdss_pll_resource_enable(dsi_pll_res, false);
 	return rc;
@@ -645,7 +632,7 @@ static void pll_20nm_vco_rate_calc(struct mdss_pll_vco_calc *vco_calc,
 		s64 vco_clk_rate, s64 ref_clk_rate, bool pll_en_90_phase)
 {
 	s64 multiplier = (1 << 20);
-	s64 duration, pll_comp_val;
+	s64 duration = 128, pll_comp_val;
 	s64 dec_start_multiple, dec_start;
 	s32 div_frac_start;
 	s64 dec_start1, dec_start2;

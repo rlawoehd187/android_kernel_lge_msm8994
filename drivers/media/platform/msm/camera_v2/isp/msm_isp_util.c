@@ -21,6 +21,10 @@
 #include "msm_camera_io_util.h"
 
 #define MAX_ISP_V4l2_EVENTS 100
+
+/*                                                           */
+#define v4l2_event_subscribe msm_isp_v4l2_event_subscribe
+#define v4l2_event_unsubscribe msm_isp_v4l2_event_unsubscribe
 static DEFINE_MUTEX(bandwidth_mgr_mutex);
 static struct msm_isp_bandwidth_mgr isp_bandwidth_mgr;
 
@@ -337,6 +341,194 @@ static inline void msm_isp_get_timestamp(struct msm_isp_timestamp *time_stamp)
 	time_stamp->buf_time.tv_sec = ts.tv_sec;
 	time_stamp->buf_time.tv_usec = ts.tv_nsec/1000;
 	do_gettimeofday(&(time_stamp->event_time));
+}
+
+/*                                                           */
+static inline struct v4l2_subscribed_event *isp_event_subscribed(
+               struct v4l2_fh *fh, u32 type, u32 id)
+{
+	struct v4l2_subscribed_event *sev;
+	assert_spin_locked(&fh->vdev->fh_lock);
+
+	list_for_each_entry(sev, &fh->subscribed, list)
+		if (sev->type == type && sev->id == id)
+			return sev;
+	return NULL;
+}
+static void * msm_isp_mempool_alloc(mempool_t *pool, gfp_t gfp_mask)
+{
+	void *element, **node;
+	unsigned long flags;
+	wait_queue_t wait;
+	gfp_t gfp_temp;
+	int nr_size = 0;
+
+	gfp_mask |= __GFP_NOMEMALLOC;	/* don't allocate emergency reserves */
+
+	gfp_temp = gfp_mask & ~(__GFP_WAIT|__GFP_IO);
+
+	spin_lock_irqsave(&pool->lock, flags);
+	if (likely(pool->curr_nr)) {
+		element = pool->elements[--pool->curr_nr];
+		memset(element, 0, (size_t)pool->pool_data);
+
+		spin_unlock_irqrestore(&pool->lock, flags);
+		/* paired with rmb in mempool_free(), read comment there */
+		smp_wmb();
+		/*
+		 * Update the allocation stack trace as this is more useful
+		 * for debugging.
+		 */
+		//kmemleak_update_trace(element);
+		return element;
+	}
+	nr_size = pool->min_nr + 1;
+	spin_unlock_irqrestore(&pool->lock, flags);
+repeat_alloc:
+	pr_err("%s:  current pool(%p) curr_nr(%d) min_nr(%d) need to allocate memory to mempool\n",
+		__func__, pool, pool->curr_nr, pool->min_nr);
+	element = pool->alloc(gfp_temp|__GFP_ZERO, pool->pool_data);
+
+	if (likely(element != NULL)) {
+		node = kmalloc_node(nr_size * sizeof(void *),
+			GFP_KERNEL, NUMA_NO_NODE);
+		if (!node) {
+			pr_err("%s: failed to resize mempool size min_nr(%d)",
+				__func__, pool->min_nr);
+			kfree(element);
+			return NULL;
+		}
+		spin_lock_irqsave(&pool->lock, flags);
+
+		if (unlikely(nr_size <= pool->min_nr)) {
+			/* Raced, other resize will do our work */
+			spin_unlock_irqrestore(&pool->lock, flags);
+			kfree(element);
+			kfree(node);
+			return NULL;
+		}
+
+		memcpy(node, pool->elements, pool->min_nr * sizeof(void*));
+		kfree(pool->elements);
+		pool->elements = node;
+		pool->elements[pool->min_nr++] = element;
+		spin_unlock_irqrestore(&pool->lock, flags);
+		return element;
+	}
+	/*
+	 * We use gfp mask w/o __GFP_WAIT or IO for the first round.  If
+	 * alloc failed with that and @pool was empty, retry immediately.
+	 */
+	if (gfp_temp != gfp_mask) {
+		gfp_temp = gfp_mask;
+		goto repeat_alloc;
+	}
+
+	pr_err("%s:  failed to allocate now start to wait until elements to be returned -pool(%p) curr_nr(%d) min_nr(%d) \n",
+		__func__, pool, pool->curr_nr, pool->min_nr);
+	/* Let's wait for someone else to return an element to @pool */
+	init_wait(&wait);
+	prepare_to_wait(&pool->wait, &wait, TASK_UNINTERRUPTIBLE);
+
+	/*
+	 * FIXME: this should be io_schedule().  The timeout is there as a
+	 * workaround for some DM problems in 2.6.18.
+	 */
+	io_schedule_timeout(5*HZ);
+
+	finish_wait(&pool->wait, &wait);
+	goto repeat_alloc;
+}
+static void msm_isp_mempool_free(void *element, mempool_t *pool)
+{
+	unsigned long flags;
+
+	if (unlikely(element == NULL))
+		return;
+
+	smp_rmb();
+	pr_err("%s:  current pool(%p) element(%p) curr_nr(%d) min_nr(%d))  \n",
+		__func__, pool, element, pool->curr_nr, pool->min_nr);
+
+	if (unlikely(pool->curr_nr < pool->min_nr)) {
+		spin_lock_irqsave(&pool->lock, flags);
+		if (likely(pool->curr_nr < pool->min_nr)) {
+			pool->elements[pool->curr_nr++] = element;
+			spin_unlock_irqrestore(&pool->lock, flags);
+			wake_up(&pool->wait);
+			return;
+		}
+		spin_unlock_irqrestore(&pool->lock, flags);
+	}
+}
+static unsigned sev_pos(const struct v4l2_subscribed_event *sev, unsigned idx)
+{
+	idx += sev->first;
+	return idx >= sev->elems ? idx - sev->elems : idx;
+}
+int msm_isp_v4l2_event_subscribe(struct v4l2_fh *fh,
+			 const struct v4l2_event_subscription *sub, unsigned elems,
+			 const struct v4l2_subscribed_event_ops *ops)
+{
+	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(fh->vdev);
+	struct vfe_device *vfe_dev=  v4l2_get_subdevdata(sd);
+	struct v4l2_subscribed_event *sev, *found_ev;
+	unsigned long flags;
+	unsigned i;
+
+	spin_lock_irqsave(&fh->vdev->fh_lock, flags);
+	found_ev = isp_event_subscribed(fh, sub->type, sub->id);
+	spin_unlock_irqrestore(&fh->vdev->fh_lock, flags);
+	if (found_ev) {
+		pr_err("%s: fh(%p) sd(%p) vfe(%p:%d) already exist!!!\n", __func__,fh, sd, vfe_dev, vfe_dev->pdev->id);
+		return 0; /* Already listening */
+	}
+
+	sev = msm_isp_mempool_alloc(vfe_dev->isp_v4l2_event_pool, GFP_KERNEL);
+
+	if (!sev)
+		return -ENOMEM;
+	for (i = 0; i < elems; i++)
+		sev->events[i].sev = sev;
+	sev->type = sub->type;
+	sev->id = sub->id;
+	sev->flags = sub->flags;
+	sev->fh = fh;
+	sev->ops = ops;
+
+	spin_lock_irqsave(&fh->vdev->fh_lock, flags);
+	list_add(&sev->list, &fh->subscribed);
+	spin_unlock_irqrestore(&fh->vdev->fh_lock, flags);
+
+	/* Mark as ready for use */
+	sev->elems = elems;
+
+	return 0;
+}
+int msm_isp_v4l2_event_unsubscribe(struct v4l2_fh *fh,
+			   const struct v4l2_event_subscription *sub)
+{
+	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(fh->vdev);
+	struct vfe_device *vfe_dev=  v4l2_get_subdevdata(sd);
+	struct v4l2_subscribed_event *sev;
+	unsigned long flags;
+	int i;
+
+	spin_lock_irqsave(&fh->vdev->fh_lock, flags);
+
+	sev = isp_event_subscribed(fh, sub->type, sub->id);
+	if (sev != NULL) {
+		/* Remove any pending events for this subscription */
+		for (i = 0; i < sev->in_use; i++) {
+			list_del(&sev->events[sev_pos(sev, i)].list);
+			fh->navailable--;
+		}
+		list_del(&sev->list);
+	}
+	spin_unlock_irqrestore(&fh->vdev->fh_lock, flags);
+
+	msm_isp_mempool_free(sev, vfe_dev->isp_v4l2_event_pool);
+	return 0;
 }
 
 int msm_isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,

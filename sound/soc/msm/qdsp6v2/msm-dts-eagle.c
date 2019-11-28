@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -19,7 +19,6 @@
 #include <linux/msm_ion.h>
 #include <linux/mm.h>
 #include <linux/msm_audio_ion.h>
-#include <linux/vmalloc.h>
 #include <sound/core.h>
 #include <sound/soc.h>
 #include <sound/pcm.h>
@@ -414,7 +413,7 @@ static void _reg_ion_mem_NT(void)
 static void _unreg_ion_mem_NT(void)
 {
 	int rc;
-	rc = q6asm_memory_unmap(_ac_NT,	_po_NT.paddr, IN);
+	rc = q6asm_memory_unmap(_ac_NT,	(uint32_t) _po_NT.paddr, IN);
 	if (rc < 0)
 		eagle_drv_err("%s: mem unmap failed", __func__);
 	rc = msm_audio_ion_free(_ion_client_NT, _ion_handle_NT);
@@ -453,12 +452,10 @@ static int _sendcache_pre(struct audio_client *ac)
 	offset = _c_bl[cidx][CBD_OFFSG];
 	cmd = _c_bl[cidx][CBD_CMD0];
 	size = _c_bl[cidx][CBD_SZ0];
-	/* check for integer overflow */
-	if (offset > (UINT_MAX - size))
-		err = -EINVAL;
-	if ((_depc_size == 0) || !_depc || (size == 0) ||
-		cmd == 0 || ((offset + size) > _depc_size) || (err != 0)) {
-		eagle_precache_err("%s: primary device %i cache index %i general error - cache size = %u, cache ptr = %p, offset = %u, size = %u, cmd = %i",
+
+	if (_depc_size == 0 || !_depc || offset < 0 || size <= 0 || cmd == 0 ||
+	    (offset + size) > _depc_size) {
+		eagle_precache_err("%s: primary device %i cache index %i general error - cache size = %u, cache ptr = %p, offset = %i, size = %i, cmd = %i",
 			__func__, _device_primary, cidx, _depc_size, _depc,
 			offset, size, cmd);
 		return -EINVAL;
@@ -533,12 +530,9 @@ NT_MODE_GOTO:
 	cmd = _c_bl[cidx][CBD_CMD2];
 	size = _c_bl[cidx][CBD_SZ2];
 
-	/* check for integer overflow */
-	if (offset > (UINT_MAX - size))
-		err = -EINVAL;
-	if ((_depc_size == 0) || !_depc || (err != 0) || (size == 0) ||
-		(cmd == 0) || (offset + size) > _depc_size) {
-		eagle_postcache_err("%s: primary device %i cache index %i port_id 0x%X general error - cache size = %u, cache ptr = %p, offset = %u, size = %u, cmd = %i",
+	if (_depc_size == 0 || !_depc || offset < 0 || size <= 0 || cmd == 0 ||
+	    (offset + size) > _depc_size) {
+		eagle_postcache_err("%s: primary device %i cache index %i port_id 0x%X general error - cache size = %u, cache ptr = %p, offset = %i, size = %i, cmd = %i",
 			__func__, _device_primary, cidx, port_id,
 			_depc_size, _depc, offset, size, cmd);
 		return -EINVAL;
@@ -737,11 +731,8 @@ int msm_dts_eagle_set_stream_gain(struct audio_client *ac, int lgain, int rgain)
 			return -EINVAL;
 		}
 		val = _c_bl[idx][CBD_OFFSG] + _vol_cmds[i][2];
-		/* check for integer overflow */
-		if (val > (UINT_MAX - _vol_cmds[i][1]))
-			err = -EINVAL;
-		if ((err != 0) || ((val + _vol_cmds[i][1]) > _depc_size)) {
-			eagle_vol_err("%s: volume size (%u) + offset (%i) out of bounds %i",
+		if ((val + _vol_cmds[i][1]) > _depc_size) {
+			eagle_vol_err("%s: volume size (%i) + offset (%i) out of bounds %i",
 				__func__, val, _vol_cmds[i][1], _depc_size);
 			return -EINVAL;
 		}
@@ -809,13 +800,7 @@ int msm_dts_eagle_handle_asm(struct dts_eagle_param_desc *depd, char *buf,
 		eagle_asm_dbg("%s: get requested", __func__);
 		if (depd->offset == -1) {
 			eagle_asm_dbg("%s: get from dsp requested", __func__);
-			if (depd->size > 0 && depd->size <= DEPC_MAX_SIZE) {
-				buf_ = buf_m = vzalloc(depd->size);
-			} else {
-				eagle_asm_err("%s: get size %u invalid",
-					      __func__, depd->size);
-				return -EINVAL;
-			}
+			buf_ = buf_m = kzalloc(depd->size, GFP_KERNEL);
 			if (!buf_m) {
 				eagle_asm_err("%s: out of memory", __func__);
 				return -ENOMEM;
@@ -836,11 +821,8 @@ int msm_dts_eagle_handle_asm(struct dts_eagle_param_desc *depd, char *buf,
 				return -EINVAL;
 			}
 			offset = _c_bl[tgt][CBD_OFFSG] + depd->offset;
-			/* check for integer overflow */
-			if (offset > (UINT_MAX - depd->size))
-				err = -EINVAL;
-			if ((err != 0) || (offset + depd->size) > _depc_size) {
-				eagle_asm_err("%s: invalid size %u and/or offset %u",
+			if ((offset + depd->size) > _depc_size) {
+				eagle_asm_err("%s: invalid size %d and/or offset %d",
 					__func__, depd->size, offset);
 				return -EINVAL;
 			}
@@ -864,7 +846,7 @@ int msm_dts_eagle_handle_asm(struct dts_eagle_param_desc *depd, char *buf,
 			memcpy(buf, buf_, depd->size);
 		}
 DTS_EAGLE_IOCTL_GET_PARAM_PRE_EXIT:
-		vfree(buf_m);
+		kfree(buf_m);
 		return (int)ret;
 	} else {
 		s32 tgt = _get_cb_for_dev(depd->device);
@@ -874,11 +856,8 @@ DTS_EAGLE_IOCTL_GET_PARAM_PRE_EXIT:
 			return -EINVAL;
 		}
 		offset = _c_bl[tgt][CBD_OFFSG] + depd->offset;
-		/* check for integer overflow */
-		if (offset > (UINT_MAX - depd->size))
-			err = -EINVAL;
-		if ((err != 0) || ((offset + depd->size) > _depc_size)) {
-			eagle_asm_err("%s: invalid size %u and/or offset %u for parameter (cache is size %u)",
+		if ((offset + depd->size) > _depc_size) {
+			eagle_asm_err("%s: invalid size %i and/or offset %i for parameter (cache is size %u)",
 				__func__, depd->size, offset, _depc_size);
 			return -EINVAL;
 		}
@@ -1011,11 +990,11 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 			eagle_ioctl_dbg("%s: previous param cache of size %u freed",
 				__func__, _depc_size);
 			_depc_size = 0;
-			vfree(_depc);
+			kfree(_depc);
 			_depc = NULL;
 		}
 		if (size)
-			_depc = vzalloc(size);
+			_depc = kzalloc(size, GFP_KERNEL);
 		else
 			eagle_ioctl_dbg("%s: %u bytes requested for param cache, nothing allocated",
 				__func__, size);
@@ -1024,7 +1003,7 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 				__func__, size);
 			_depc_size = size;
 		} else {
-			eagle_ioctl_err("%s: error allocating param cache (vzalloc failed on %u bytes)",
+			eagle_ioctl_err("%s: error allocating param cache (kzalloc failed on %d bytes)",
 				__func__, size);
 			_depc_size = 0;
 			return -ENOMEM;
@@ -1055,13 +1034,7 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 		}
 		depd.device &= DTS_EAGLE_FLAG_IOCTL_MASK;
 		if (depd.offset == -1) {
-			if (depd.size > 0 && depd.size <= DEPC_MAX_SIZE) {
-				buf = buf_m = vzalloc(depd.size);
-			} else {
-				eagle_ioctl_err("%s: get size %u invalid",
-						__func__, depd.size);
-				return -EINVAL;
-			}
+			buf = buf_m = kzalloc(depd.size, GFP_KERNEL);
 			if (!buf_m) {
 				eagle_ioctl_err("%s: out of memory", __func__);
 				return -ENOMEM;
@@ -1080,12 +1053,8 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 				return -EINVAL;
 			}
 			offset = _c_bl[cb][CBD_OFFSG] + depd.offset;
-			/* check for integer overflow */
-			if (offset > (UINT_MAX - depd.size))
-				err = -EINVAL;
-			if ((err != 0) ||
-			    ((offset + depd.size) > _depc_size)) {
-				eagle_ioctl_err("%s: invalid size %u and/or offset %u",
+			if ((offset + depd.size) > _depc_size) {
+				eagle_ioctl_err("%s: invalid size %d and/or offset %d",
 					__func__, depd.size, offset);
 				return -EINVAL;
 			}
@@ -1099,7 +1068,7 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 			eagle_ioctl_err("%s: error copying get data", __func__);
 			ret = -EFAULT;
 		}
-		vfree(buf_m);
+		kfree(buf_m);
 		break;
 	}
 	case DTS_EAGLE_IOCTL_SET_PARAM: {
@@ -1131,11 +1100,8 @@ int msm_dts_eagle_ioctl(unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 		}
 		offset = _c_bl[tgt][CBD_OFFSG] + depd.offset;
-		/* check for integer overflow */
-		if (offset > (UINT_MAX - depd.size))
-			err = -EINVAL;
-		if ((err != 0) || ((offset + depd.size) > _depc_size)) {
-			eagle_ioctl_err("%s: invalid size %u and/or offset %u for parameter (target cache block %i with offset %i, global cache is size %u)",
+		if ((offset + depd.size) > _depc_size) {
+			eagle_ioctl_err("%s: invalid size %i and/or offset %i for parameter (target cache block %i with offset %i, global cache is size %u)",
 				__func__, depd.size, offset, tgt,
 				_c_bl[tgt][CBD_OFFSG], _depc_size);
 			return -EINVAL;
@@ -1603,7 +1569,6 @@ void msm_dts_eagle_pcm_free(struct snd_pcm *pcm)
 {
 	if (!--_ref_cnt)
 		_unreg_ion_mem();
-	vfree(_depc);
 }
 
 MODULE_DESCRIPTION("DTS EAGLE platform driver");

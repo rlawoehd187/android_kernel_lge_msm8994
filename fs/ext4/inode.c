@@ -2444,6 +2444,7 @@ static int ext4_da_writepages(struct address_space *mapping,
 	pgoff_t done_index = 0;
 	pgoff_t end;
 	struct blk_plug plug;
+	struct dentry *tmp_dentry;
 
 	trace_ext4_da_writepages(inode, wbc);
 
@@ -2542,6 +2543,9 @@ retry:
 			ext4_msg(inode->i_sb, KERN_CRIT, "%s: jbd2_start: "
 			       "%ld pages, ino %lu; err %d", __func__,
 				wbc->nr_to_write, inode->i_ino, ret);
+			tmp_dentry = d_find_any_alias(inode);
+			if(tmp_dentry)
+			    printk("[LGE][%s] current->pid: %d, current->comm: %s, dentry : %s\n",__func__,current->pid, current->comm,tmp_dentry->d_name.name);
 			blk_finish_plug(&plug);
 			goto out_writepages;
 		}

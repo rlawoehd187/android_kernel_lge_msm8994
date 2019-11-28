@@ -276,6 +276,9 @@ int adreno_ringbuffer_read_pm4_ucode(struct kgsl_device *device)
 	return 0;
 
 err:
+#ifdef CONFIG_MACH_LGE
+	if (system_state != SYSTEM_RESTART)
+#endif
 	KGSL_DRV_CRIT(device, "Failed to read pm4 microcode %s\n",
 		adreno_dev->gpucore->pm4fw_name);
 	return ret;
@@ -335,7 +338,11 @@ int adreno_ringbuffer_read_pfp_ucode(struct kgsl_device *device)
 	return 0;
 
 err:
-	KGSL_DRV_CRIT(device, "Failed to read pfp microcode %s\n",
+#ifdef CONFIG_MACH_LGE
+	if (system_state != SYSTEM_RESTART)
+#endif
+
+	KGSL_DRV_FATAL(device, "Failed to read pfp microcode %s\n",
 		adreno_dev->gpucore->pfpfw_name);
 	return ret;
 }

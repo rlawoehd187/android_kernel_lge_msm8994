@@ -35,7 +35,6 @@ struct led_classdev {
 	int			 max_brightness;
 	int			 usr_brightness_req;
 	int			 flags;
-
 	/* Lower 16 bits reflect status */
 #define LED_SUSPENDED		(1 << 0)
 	/* Upper 16 bits reflect control information */

@@ -529,7 +529,8 @@ struct msm_otg {
 #define PHY_RETENTIONED			BIT(1)
 #define XO_SHUTDOWN			BIT(2)
 #define CLOCKS_DOWN			BIT(3)
-#define PHY_REGULATORS_LPM	BIT(4)
+#define PHY_REGULATORS_LPM		BIT(4)
+
 	int reset_counter;
 	unsigned long b_last_se0_sess;
 	unsigned long tmouts;
@@ -554,6 +555,9 @@ struct msm_otg {
 	bool is_ext_chg_dcp;
 	bool pm_done;
 	struct qpnp_vadc_chip	*vadc_dev;
+#ifdef CONFIG_LGE_PM_USB_ID
+	struct qpnp_vadc_chip	*vadc_dev_pm;
+#endif
 	int ext_id_irq;
 	bool phy_irq_pending;
 	wait_queue_head_t	host_suspend_wait;

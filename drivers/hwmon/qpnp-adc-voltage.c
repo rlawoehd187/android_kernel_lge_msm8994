@@ -33,6 +33,10 @@
 #include <linux/power_supply.h>
 #include <linux/thermal.h>
 
+#ifdef CONFIG_LGE_PM_DEBUG
+#include <soc/qcom/lge/board_lge.h>
+#endif
+
 /* QPNP VADC register definition */
 #define QPNP_VADC_REVISION1				0x0
 #define QPNP_VADC_REVISION2				0x1
@@ -157,6 +161,10 @@ struct qpnp_vadc_chip {
 	struct power_supply		*vadc_chg_vote;
 	struct sensor_device_attribute	sens_attr[0];
 };
+
+#ifdef CONFIG_LGE_PM_DEBUG
+struct qpnp_vadc_chip *qpnp_vadc = NULL;
+#endif
 
 LIST_HEAD(qpnp_vadc_device_list);
 
@@ -1825,6 +1833,25 @@ static void qpnp_vadc_unlock(struct qpnp_vadc_chip *vadc)
 	mutex_unlock(&vadc->adc->adc_lock);
 }
 
+#ifdef CONFIG_LGE_PM_DEBUG
+void xo_therm_logging(void)
+{
+	struct qpnp_vadc_result xo;
+	int rc = -1;
+
+	if (qpnp_vadc != NULL) {
+		rc = qpnp_vadc_read(qpnp_vadc, LR_MUX3_PU1_XO_THERM, &xo);
+		if (rc) {
+			pr_err("VADC read error with %d\n", rc);
+		} else {
+			printk(KERN_INFO "[XO_THERM] Result:%lld Raw:%d\n",
+			       xo.physical, xo.adc_code);
+		}
+	} else
+		pr_err("Can't find vadc_chip\n");
+}
+#endif
+
 int32_t qpnp_vadc_iadc_sync_request(struct qpnp_vadc_chip *vadc,
 				enum qpnp_vadc_channels channel)
 {
@@ -2401,6 +2428,10 @@ static int qpnp_vadc_probe(struct spmi_device *spmi)
 		INIT_WORK(&vadc->trigger_low_thr_work, qpnp_vadc_low_thr_fn);
 	}
 
+#ifdef CONFIG_LGE_PM_DEBUG
+	if (of_property_read_bool(node, "qcom,vadc-xo-monitor"))
+		qpnp_vadc = vadc;
+#endif
 	vadc->vadc_iadc_sync_lock = false;
 	dev_set_drvdata(&spmi->dev, vadc);
 	list_add(&vadc->list, &qpnp_vadc_device_list);

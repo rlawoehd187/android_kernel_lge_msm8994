@@ -18,6 +18,10 @@
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
 
+#ifdef CONFIG_Z2_LGD_POLED_PANEL
+#include <linux/mdss_io_util.h>
+#endif
+
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
@@ -432,6 +436,14 @@ static struct msm_cam_clk_info cam_8974_clk_info[] = {
 	[SENSOR_CAM_CLK] = {"cam_clk", 0},
 };
 
+#ifdef CONFIG_Z2_LGD_POLED_PANEL
+static int8_t camera_power_state = 0;
+int camera_is_power_on()
+{
+	return camera_power_state;
+}
+#endif
+
 int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 {
 	struct msm_camera_power_ctrl_t *power_info;
@@ -453,6 +465,12 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 			__func__, __LINE__, power_info, sensor_i2c_client);
 		return -EINVAL;
 	}
+	pr_err("%s for %s\n", __func__, s_ctrl->sensordata->sensor_name);
+
+#ifdef CONFIG_Z2_LGD_POLED_PANEL
+	camera_power_state--;
+#endif
+
 	return msm_camera_power_down(power_info, sensor_device_type,
 		sensor_i2c_client);
 }
@@ -503,6 +521,11 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 			break;
 		}
 	}
+	pr_err("%s for %s\n", __func__, s_ctrl->sensordata->sensor_name);
+
+#ifdef CONFIG_Z2_LGD_POLED_PANEL
+	camera_power_state++;
+#endif
 
 	return rc;
 }
@@ -558,7 +581,7 @@ int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 		return rc;
 	}
 
-	CDBG("%s: read id: 0x%x expected id 0x%x:\n", __func__, chipid,
+	pr_err("%s: read id: 0x%x expected id 0x%x:\n", __func__, chipid,
 		slave_info->sensor_id);
 	if (msm_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
 		pr_err("msm_sensor_match_id chip id doesnot match\n");
@@ -1462,6 +1485,7 @@ static struct msm_camera_i2c_fn_t msm_sensor_qup_func_tbl = {
 	.i2c_write_conf_tbl = msm_camera_qup_i2c_write_conf_tbl,
 };
 
+static uint8_t main_sensor_probe_succeed = 0;/*                                */
 int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 				  const void *data)
 {
@@ -1481,6 +1505,18 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 			return rc;
 		}
 	}
+	pr_err("%s sensor name %s\n", __func__,
+		s_ctrl->sensordata->sensor_name);
+/*                                */
+	if (strcmp(s_ctrl->sensordata->sensor_name, "imx135") == 0 ||
+		strcmp(s_ctrl->sensordata->sensor_name, "imx214") == 0) {
+		if (main_sensor_probe_succeed == 1) {
+		 	CDBG("try %s sensor probe but alreay main sensor probe !!", s_ctrl->sensordata->sensor_name);
+		  main_sensor_probe_succeed = 0;
+		  return rc;
+		}
+	}
+
 	s_ctrl->sensordata->power_info.dev = &pdev->dev;
 	s_ctrl->sensor_device_type = MSM_CAMERA_PLATFORM_DEVICE;
 	s_ctrl->sensor_i2c_client->cci_client = kzalloc(sizeof(
@@ -1524,8 +1560,15 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 		return rc;
 	}
 
-	pr_info("%s %s probe succeeded\n", __func__,
+	pr_err("%s %s probe succeeded\n", __func__,
 		s_ctrl->sensordata->sensor_name);
+/*                                */
+	if (strcmp(s_ctrl->sensordata->sensor_name, "imx135") == 0 || 
+		strcmp(s_ctrl->sensordata->sensor_name, "imx214") == 0) {
+		 	CDBG("main sensor %s probe succeeded !!", s_ctrl->sensordata->sensor_name);
+		  main_sensor_probe_succeed = 1;
+	}
+  
 	v4l2_subdev_init(&s_ctrl->msm_sd.sd,
 		s_ctrl->sensor_v4l2_subdev_ops);
 	snprintf(s_ctrl->msm_sd.sd.name,
@@ -1561,6 +1604,10 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 
 	s_ctrl->func_tbl->sensor_power_down(s_ctrl);
 	CDBG("%s:%d\n", __func__, __LINE__);
+
+#ifdef CONFIG_Z2_LGD_POLED_PANEL
+	camera_power_state = 0;
+#endif
 	return rc;
 }
 

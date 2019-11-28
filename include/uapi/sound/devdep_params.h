@@ -61,7 +61,7 @@ struct dolby_param_license {
 
 struct dts_eagle_param_desc {
 	uint32_t id;
-	uint32_t size;
+	int32_t size;
 	int32_t offset;
 	uint32_t device;
 } __packed;

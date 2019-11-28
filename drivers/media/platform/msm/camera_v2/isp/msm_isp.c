@@ -71,6 +71,16 @@ static const struct platform_device_id msm_vfe_dev_id[] = {
 #define MAX_OVERFLOW_COUNTERS  29
 #define OVERFLOW_LENGTH 1024
 #define OVERFLOW_BUFFER_LENGTH 64
+
+#define MAX_ISP_V4l2_EVENTS 100
+/*                                                 
+                                                                
+                           
+                                  
+                                           */
+#define MAX_ISP_V4l2_EVENTS_SUBSCRIPTION \
+	ISP_EVENT_MASK_INDEX_BUF_FATAL_ERROR+MSM_ISP_STATS_MAX+VFE_SRC_MAX*3
+
 static char stat_line[OVERFLOW_LENGTH];
 
 static struct msm_isp_buf_mgr vfe_buf_mgr;
@@ -587,6 +597,15 @@ static int vfe_probe(struct platform_device *pdev)
 
 	vfe_dev->buf_mgr->init_done = 1;
 	vfe_dev->vfe_open_cnt = 0;
+
+	/*                                                  */
+	vfe_dev->isp_v4l2_event_pool= mempool_create_kmalloc_pool(
+		/*MAX_ISP_V4l2_EVENTS_SUBSCRIPTION*/10, sizeof(struct v4l2_subscribed_event)
+		+ sizeof(struct v4l2_kevent)* MAX_ISP_V4l2_EVENTS);
+
+	if(!vfe_dev->isp_v4l2_event_pool)
+		pr_err("%s: failed to alloc create isp mempool \n", __func__);
+
 	return rc;
 
 probe_fail3:

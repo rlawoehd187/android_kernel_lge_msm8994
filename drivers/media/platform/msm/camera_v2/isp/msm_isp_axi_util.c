@@ -1685,8 +1685,11 @@ static int msm_isp_update_stream_bandwidth(struct vfe_device *vfe_dev)
 		(total_bandwidth * ISP_BUS_UTILIZATION_FACTOR / ISP_Q2));
 	else
 		rc = msm_isp_update_bandwidth(ISP_VFE0 + vfe_dev->pdev->id,
-			(total_bandwidth + MSM_ISP_MIN_AB),
-			(total_bandwidth + MSM_ISP_MIN_IB));
+            (total_bandwidth + MSM_ISP_MIN_AB),
+            (total_bandwidth * ISP_BUS_UTILIZATION_FACTOR / ISP_Q2 + MSM_ISP_MIN_IB));
+//                                                                                           
+//			(total_bandwidth + MSM_ISP_MIN_AB),
+//			(total_bandwidth + MSM_ISP_MIN_IB));
 
 	if (rc < 0)
 		pr_err("%s: update failed\n", __func__);
@@ -2750,9 +2753,6 @@ void msm_isp_axi_disable_all_wm(struct vfe_device *vfe_dev)
 
 	for (i = 0; i < VFE_AXI_SRC_MAX; i++) {
 		stream_info = &axi_data->stream_info[i];
-
-		if (stream_info->state != ACTIVE)
-			continue;
 
 		for (j = 0; j < stream_info->num_planes; j++)
 			vfe_dev->hw_info->vfe_ops.axi_ops.enable_wm(

@@ -26,6 +26,12 @@
 #include <sound/msm-dts-eagle.h>
 #include "msm-dts-srs-tm-config.h"
 
+#define LVVE
+#if defined(LVVE)
+#define VPM_TX_SM_LVVEFQ    (0x1000BFF0)
+#define VPM_TX_DM_LVVEFQ    (0x1000BFF1)
+#endif
+
 #define TIMEOUT_MS 1000
 
 #define RESET_COPP_ID 99
@@ -270,12 +276,8 @@ int adm_dts_eagle_set(int port_id, int copp_idx, int param_id,
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	/* check for integer overflow */
-	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
-		ret = -EINVAL;
-	if ((ret < 0) ||
-	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
+	if (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size) {
+		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %i.\n",
 			__func__, this_adm.outband_memmap.size,
 			size + APR_CMD_OB_HDR_SZ);
 		ret = -EINVAL;
@@ -353,8 +355,8 @@ int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
 		return -EINVAL;
 	}
 
-	if ((size == 0) || !data) {
-		pr_err("DTS_EAGLE_ADM: %s - invalid size %u or pointer %p.\n",
+	if (size <= 0 || !data) {
+		pr_err("DTS_EAGLE_ADM: %s - invalid size %i or pointer %p.\n",
 			__func__, size, data);
 		return -EINVAL;
 	}
@@ -368,12 +370,8 @@ int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	/* check for integer overflow */
-	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
-		ret = -EINVAL;
-	if ((ret < 0) ||
-	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
+	if (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size) {
+		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %i.\n",
 			__func__, this_adm.outband_memmap.size,
 			size + APR_CMD_OB_HDR_SZ);
 		ret = -EINVAL;
@@ -889,7 +887,7 @@ int adm_set_stereo_to_custom_stereo(int port_id, int copp_idx,
 	adm_params->mem_map_handle = 0;
 	adm_params->payload_size = params_length;
 	/* direction RX as 0 */
-	adm_params->direction = ADM_MATRIX_ID_AUDIO_RX;
+	adm_params->direction = ADM_PATH_PLAYBACK;
 	/* session id for this cmd to be applied on */
 	adm_params->sessionid = session_id;
 	adm_params->deviceid =
@@ -2167,6 +2165,10 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 	}
 
 	if ((topology == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
+#if defined(LVVE)
+	    (topology == VPM_TX_SM_LVVEFQ ) ||
+	    (topology == VPM_TX_DM_LVVEFQ ) ||
+#endif
 	    (topology == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
 	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY))
 		rate = 16000;

@@ -49,6 +49,10 @@
 #include <linux/cpumask.h>
 #include <linux/suspend.h>
 
+#ifdef CONFIG_LGE_HANDLE_PANIC
+#include <soc/qcom/lge/lge_handle_panic.h>
+#endif
+
 #define CREATE_TRACE_POINTS
 #define TRACE_MSM_THERMAL
 #include <trace/trace_thermal.h>
@@ -299,7 +303,9 @@ enum ocr_request {
 	OPTIMUM_CURRENT_NR,
 };
 
+#ifndef __ATTR_RW
 #define __ATTR_RW(attr) __ATTR(attr, 0644, attr##_show, attr##_store)
+#endif
 
 #define SYNC_CORE(_cpu) \
 	(core_ptr && cpus[_cpu].parent_ptr->sync_cluster)
@@ -1189,8 +1195,20 @@ static int __ref init_cluster_freq_table(void)
 				cpu_set = cpumask_test_cpu(_cpu,
 						cpus_previously_online);
 #ifdef CONFIG_SMP
+				cpu_set = cpumask_test_cpu(_cpu,
+						cpus_previously_online);
 				cpu_up(_cpu);
 				cpu_down(_cpu);
+				/* Remove prev online bit if we are first to
+				   put it online */
+				if (!cpu_set) {
+					cpumask_clear_cpu(_cpu,
+						cpus_previously_online);
+					cpumask_scnprintf(buf, sizeof(buf),
+						cpus_previously_online);
+					pr_debug("Reset prev online to %s\n",
+						 buf);
+				}
 #endif
 				/* Remove prev online bit if we are first to
 				   put it online */
@@ -2324,6 +2342,11 @@ static void msm_thermal_bite(int tsens_id, long temp)
 
 	pr_err("TSENS:%d reached temperature:%ld. System reset\n",
 		tsens_id, temp);
+
+#ifdef CONFIG_LGE_HANDLE_PANIC
+	lge_set_restart_reason(LGE_RB_MAGIC | LGE_ERR_TSENS);
+#endif
+
 	if (!is_scm_armv8()) {
 		scm_call_atomic1(SCM_SVC_BOOT, THERM_SECURE_BITE_CMD, 0);
 	} else {
@@ -2480,7 +2503,11 @@ static int __ref update_offline_cores(int val)
 				pr_err("Unable to offline CPU%d. err:%d\n",
 					cpu, ret);
 			else
+#ifdef CONFIG_LGE_PM_DEBUG
+				pr_info("Offlined CPU%d\n", cpu);
+#else
 				pr_debug("Offlined CPU%d\n", cpu);
+#endif
 			trace_thermal_post_core_offline(cpu,
 				cpumask_test_cpu(cpu, cpu_online_mask));
 		} else if (online_core && (previous_cpus_offlined & BIT(cpu))) {
@@ -2499,7 +2526,11 @@ static int __ref update_offline_cores(int val)
 				pr_err("Unable to online CPU%d. err:%d\n",
 					cpu, ret);
 			} else {
+#ifdef CONFIG_LGE_PM_DEBUG
+				pr_info("Onlined CPU%d\n", cpu);
+#else
 				pr_debug("Onlined CPU%d\n", cpu);
+#endif
 			}
 			trace_thermal_post_core_online(cpu,
 				cpumask_test_cpu(cpu, cpu_online_mask));
@@ -3000,8 +3031,13 @@ static int __ref msm_thermal_cpu_callback(struct notifier_block *nfb,
 		if (core_control_enabled &&
 			(msm_thermal_info.core_control_mask & BIT(cpu)) &&
 			(cpus_offlined & BIT(cpu))) {
+#ifdef CONFIG_LGE_PM_DEBUG
+			pr_info("Preventing CPU%d from coming online.\n",
+				cpu);
+#else
 			pr_debug("Preventing CPU%d from coming online.\n",
 				cpu);
+#endif
 			return NOTIFY_BAD;
 		}
 		break;
@@ -4145,19 +4181,13 @@ static void __ref disable_msm_thermal(void)
 	/* make sure check_temp is no longer running */
 	cancel_delayed_work_sync(&check_temp_work);
 
-	get_online_cpus();
 	for_each_possible_cpu(cpu) {
 		if (cpus[cpu].limited_max_freq == UINT_MAX &&
 			cpus[cpu].limited_min_freq == 0)
 			continue;
-		pr_info("Max frequency reset for CPU%d\n", cpu);
 		cpus[cpu].limited_max_freq = UINT_MAX;
 		cpus[cpu].limited_min_freq = 0;
-		if (!SYNC_CORE(cpu))
-			update_cpu_freq(cpu);
 	}
-	update_cluster_freq();
-	put_online_cpus();
 }
 
 static void interrupt_mode_init(void)
@@ -4175,6 +4205,11 @@ static void interrupt_mode_init(void)
 		thermal_monitor_init();
 		msm_thermal_add_cx_nodes();
 		msm_thermal_add_gfx_nodes();
+		if (freq_mitigation_task)
+			complete(&freq_mitigation_complete);
+		else
+			pr_err(
+			"Frequency mitigation task is not initialized\n");
 	}
 }
 

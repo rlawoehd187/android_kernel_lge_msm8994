@@ -75,6 +75,8 @@
 #include <asm/unaligned.h>
 #include <net/netdma.h>
 
+//add_to_scale
+#define TCP_RMEM_SCALE 4
 int sysctl_tcp_timestamps __read_mostly = 1;
 int sysctl_tcp_window_scaling __read_mostly = 1;
 int sysctl_tcp_sack __read_mostly = 1;
@@ -4135,7 +4137,8 @@ static bool tcp_try_coalesce(struct sock *sk,
 
 	*fragstolen = false;
 
-	if (tcp_hdr(from)->fin)
+	//if (tcp_hdr(from)->fin)
+	if (tcp_hdr(from)->fin || tcp_hdr(to)->syn)
 		return false;
 
 	/* Its possible this segment overlaps with prior segment in queue */
@@ -5288,7 +5291,8 @@ slow_path:
 	if (len < (th->doff << 2) || tcp_checksum_complete_user(sk, skb))
 		goto csum_error;
 
-	if (!th->ack && !th->rst)
+//	if (!th->ack && !th->rst)
+    if (!th->ack && !th->rst && !th->syn)
 		goto discard;
 
 	/*
@@ -5703,7 +5707,8 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			goto discard;
 	}
 
-	if (!th->ack && !th->rst)
+//	if (!th->ack && !th->rst)
+    if (!th->ack && !th->rst && !th->syn)
 		goto discard;
 
 	if (!tcp_validate_incoming(sk, skb, th, 0))

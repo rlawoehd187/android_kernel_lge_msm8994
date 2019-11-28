@@ -22,7 +22,7 @@ DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES))
 ifneq ($(DTB_NAMES),)
 DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
 else
-DTB_LIST := $(dtb-y)
+DTB_LIST := $(patsubst %.dts,%.dtb,$(notdir $(wildcard echo $(srctree)/arch/arm64/boot/dts/lge/$(DTS_TARGET)/*.dts)))
 endif
 DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
 

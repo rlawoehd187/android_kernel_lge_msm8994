@@ -27,6 +27,7 @@
 
 #define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
 #define RUNTIME_SUSPEND_DELAY_MS 10000
+#define RUNTIME_SUSPEND_DELAY_MS_ONLY_SD 90000  /* For MP3 playing */
 
 static ssize_t mmc_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -417,6 +418,14 @@ int mmc_add_card(struct mmc_card *card)
 			uhs_bus_speed_mode, type, card->rca);
 	}
 
+#ifdef CONFIG_MACH_LGE
+	/*           
+                                      
+                                        
+  */
+	printk(KERN_INFO "[LGE][MMC][%-18s( )] mmc_hostname:%s, type:%s\n", __func__, mmc_hostname(card->host), type);
+#endif
+
 #ifdef CONFIG_DEBUG_FS
 	mmc_add_card_debugfs(card);
 #endif
@@ -436,10 +445,29 @@ int mmc_add_card(struct mmc_card *card)
 			       mmc_hostname(card->host), __func__, ret);
 	}
 	ret = device_add(&card->dev);
+#ifdef CONFIG_MACH_LGE
+	/*           
+                                      
+                                        
+  */
+	if (ret) {
+		printk(KERN_INFO "[LGE][MMC][%-18s( )] device_add & uevent posting fail!, ret:%d \n", __func__, ret);
+		return ret;
+	} else {
+		printk(KERN_INFO "[LGE][MMC][%-18s( )] device_add & uevent posting complete!\n", __func__);
+	}
+#else
 	if (ret)
 		return ret;
+#endif
 
 	device_enable_async_suspend(&card->dev);
+#if defined(CONFIG_BCMDHD) || defined (CONFIG_BCMDHD_MODULE)
+	if (!strcmp(mmc_hostname(card->host), "mmc2")){
+	    device_disable_async_suspend(&card->dev);
+	    pr_err("%s: %s: device_disable_async_suspend\n", mmc_hostname(card->host),__func__);
+	}
+#endif
 	if (mmc_use_core_runtime_pm(card->host) && !mmc_card_sdio(card)) {
 		card->rpm_attrib.show = show_rpm_delay;
 		card->rpm_attrib.store = store_rpm_delay;
@@ -451,8 +479,11 @@ int mmc_add_card(struct mmc_card *card)
 		if (ret)
 			pr_err("%s: %s: creating runtime pm sysfs entry: failed: %d\n",
 			       mmc_hostname(card->host), __func__, ret);
-		/* Default timeout is 10 seconds */
-		card->idle_timeout = RUNTIME_SUSPEND_DELAY_MS;
+
+		if(mmc_card_sd(card))
+			card->idle_timeout = RUNTIME_SUSPEND_DELAY_MS_ONLY_SD;
+		else
+			card->idle_timeout = RUNTIME_SUSPEND_DELAY_MS;	/* Default timeout is 10 seconds */
 	}
 
 	mmc_card_set_present(card);

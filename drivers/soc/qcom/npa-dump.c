@@ -155,7 +155,6 @@ static int npa_dump_probe(struct platform_device *pdev)
 	struct resource *res;
 	void __iomem *npa_base, *rpm_base;
 	struct dentry *dent;
-	int ret;
 
 	/* Get the location of the NPA log's start address offset */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -180,7 +179,7 @@ static int npa_dump_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, dent);
 
-	return ret;
+	return 0;
 }
 
 static int npa_dump_remove(struct platform_device *pdev)

@@ -26,6 +26,8 @@
 #include <linux/msm-bus-board.h>
 
 #include "msm_buf_mgr.h"
+/*                                                  */
+#include <linux/mempool.h>
 
 #define VFE40_8974V1_VERSION 0x10000018
 #define VFE40_8974V2_VERSION 0x1001001A
@@ -639,6 +641,8 @@ struct vfe_device {
 	uint8_t reg_updated;
 	struct dual_vfe_resource *dual_vfe_res;
 	uint32_t is_split;
+	/*                                                  */
+	mempool_t *isp_v4l2_event_pool;
 };
 
 #endif

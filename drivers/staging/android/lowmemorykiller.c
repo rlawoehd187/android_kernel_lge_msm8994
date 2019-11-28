@@ -45,6 +45,14 @@
 #include <linux/fs.h>
 #include <linux/cpuset.h>
 #include <linux/show_mem_notifier.h>
+#ifdef CONFIG_HSWAP
+#include <linux/kthread.h>
+#include "../../block/zram/zram_drv.h"
+#endif
+#include <linux/vmpressure.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/almk.h>
 
 #ifdef CONFIG_HIGHMEM
 #define _ZONE ZONE_HIGHMEM
@@ -76,6 +84,96 @@ static unsigned long lowmem_deathpending_timeout;
 		if (lowmem_debug_level >= (level))	\
 			pr_info(x);			\
 	} while (0)
+
+static atomic_t shift_adj = ATOMIC_INIT(0);
+static short adj_max_shift = 353;
+
+/* User knob to enable/disable adaptive lmk feature */
+static int enable_adaptive_lmk;
+module_param_named(enable_adaptive_lmk, enable_adaptive_lmk, int,
+	S_IRUGO | S_IWUSR);
+
+/*
+ * This parameter controls the behaviour of LMK when vmpressure is in
+ * the range of 90-94. Adaptive lmk triggers based on number of file
+ * pages wrt vmpressure_file_min, when vmpressure is in the range of
+ * 90-94. Usually this is a pseudo minfree value, higher than the
+ * highest configured value in minfree array.
+ */
+static int vmpressure_file_min;
+module_param_named(vmpressure_file_min, vmpressure_file_min, int,
+	S_IRUGO | S_IWUSR);
+
+enum {
+	VMPRESSURE_NO_ADJUST = 0,
+	VMPRESSURE_ADJUST_ENCROACH,
+	VMPRESSURE_ADJUST_NORMAL,
+};
+
+int adjust_minadj(short *min_score_adj)
+{
+	int ret = VMPRESSURE_NO_ADJUST;
+
+	if (!enable_adaptive_lmk)
+		return 0;
+
+	if (atomic_read(&shift_adj) &&
+		(*min_score_adj > adj_max_shift)) {
+		if (*min_score_adj == OOM_SCORE_ADJ_MAX + 1)
+			ret = VMPRESSURE_ADJUST_ENCROACH;
+		else
+			ret = VMPRESSURE_ADJUST_NORMAL;
+		*min_score_adj = adj_max_shift;
+	}
+	atomic_set(&shift_adj, 0);
+
+	return ret;
+}
+
+static int lmk_vmpressure_notifier(struct notifier_block *nb,
+			unsigned long action, void *data)
+{
+	int other_free, other_file;
+	unsigned long pressure = action;
+	int array_size = ARRAY_SIZE(lowmem_adj);
+
+	if (!enable_adaptive_lmk)
+		return 0;
+
+	if (pressure >= 95) {
+		other_file = global_page_state(NR_FILE_PAGES) -
+			global_page_state(NR_SHMEM) -
+			total_swapcache_pages();
+		other_free = global_page_state(NR_FREE_PAGES);
+
+		atomic_set(&shift_adj, 1);
+		trace_almk_vmpressure(pressure, other_free, other_file);
+	} else if (pressure >= 90) {
+		if (lowmem_adj_size < array_size)
+			array_size = lowmem_adj_size;
+		if (lowmem_minfree_size < array_size)
+			array_size = lowmem_minfree_size;
+
+		other_file = global_page_state(NR_FILE_PAGES) -
+			global_page_state(NR_SHMEM) -
+			total_swapcache_pages();
+
+		other_free = global_page_state(NR_FREE_PAGES);
+
+		if ((other_free < lowmem_minfree[array_size - 1]) &&
+			(other_file < vmpressure_file_min)) {
+				atomic_set(&shift_adj, 1);
+				trace_almk_vmpressure(pressure, other_free,
+					other_file);
+		}
+	}
+
+	return 0;
+}
+
+static struct notifier_block lmk_vmpr_nb = {
+	.notifier_call = lmk_vmpressure_notifier,
+};
 
 static int test_task_flag(struct task_struct *p, int flag)
 {
@@ -144,7 +242,8 @@ void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
 			if (other_file != NULL)
 				*other_file -= zone_page_state(zone,
 							       NR_FILE_PAGES)
-					      - zone_page_state(zone, NR_SHMEM);
+					- zone_page_state(zone, NR_SHMEM)
+					- zone_page_state(zone, NR_SWAPCACHE);
 		} else if (zone_idx < classzone_idx) {
 			if (zone_watermark_ok(zone, 0, 0, classzone_idx, 0)) {
 				if (!use_cma_pages) {
@@ -261,6 +360,165 @@ void tune_lmk_param(int *other_free, int *other_file, struct shrink_control *sc)
 	}
 }
 
+#ifdef CONFIG_HSWAP
+static bool reclaim_task_is_ok(int selected_task_anon_size)
+{
+	int free_size = zram_free_size() - get_lowest_prio_swapper_space_nrpages();
+
+	if (selected_task_anon_size < free_size)
+		return true;
+
+	return false;
+}
+
+#define SERVICE_B_ADJ 8
+#define CACHED_APP_MIN_ADJ 9
+#define OOM_SCORE_ADJ_DECREASE_VALUE (3 * OOM_SCORE_ADJ_MAX / (-OOM_DISABLE))
+
+#define OOM_SCORE_SERVICE_B_ADJ \
+	(SERVICE_B_ADJ * OOM_SCORE_ADJ_MAX / (-OOM_DISABLE))
+#define OOM_SCORE_CACHED_APP_MIN_ADJ \
+	(CACHED_APP_MIN_ADJ * OOM_SCORE_ADJ_MAX / (-OOM_DISABLE))
+
+#define VMPRESSURE_MEDIUM 50
+#define VMPRESSURE_CRITICAL 95
+
+#define RECLAIM_SUCCESS_RATIO 75
+#define RECLAIM_WINDOWS_SIZE 50
+
+static int reclaim_success;
+static int reclaim_fail;
+static int memory_pressure_level;
+
+static DEFINE_MUTEX(reclaim_mutex);
+
+static struct completion reclaim_completion;
+static struct task_struct *selected_task;
+
+static inline void decrease_task_oom_score_adj(struct task_struct *task)
+{
+	unsigned long flags;
+
+	if (OOM_SCORE_SERVICE_B_ADJ - 1 < task->signal->oom_score_adj) {
+		if (lock_task_sighand(task, &flags)) {
+			task->signal->oom_score_adj -= OOM_SCORE_ADJ_DECREASE_VALUE;
+			if (task->signal->oom_score_adj < OOM_SCORE_SERVICE_B_ADJ - 1)
+				task->signal->oom_score_adj = OOM_SCORE_SERVICE_B_ADJ - 1;
+			unlock_task_sighand(task, &flags);
+		}
+	}
+}
+
+static inline void adjust_memory_pressure_level(void)
+{
+	int reclaim_success_ratio = reclaim_success * 100 /
+		(reclaim_success + reclaim_fail);
+
+	if (RECLAIM_SUCCESS_RATIO > reclaim_success_ratio)
+		++memory_pressure_level;
+	else if (RECLAIM_SUCCESS_RATIO < reclaim_success_ratio)
+		--memory_pressure_level;
+
+	if (memory_pressure_level < VMPRESSURE_MEDIUM)
+		memory_pressure_level = VMPRESSURE_MEDIUM;
+	else if (VMPRESSURE_CRITICAL < memory_pressure_level)
+		memory_pressure_level = VMPRESSURE_CRITICAL;
+}
+
+static unsigned long memory_calc_pressure(unsigned long scanned,
+						    unsigned long reclaimed)
+{
+	unsigned long scale = scanned + reclaimed;
+	unsigned long pressure;
+
+	/*
+	 * We calculate the ratio (in percents) of how many pages were
+	 * scanned vs. reclaimed in a given time frame (window). Note that
+	 * time is in VM reclaimer's "ticks", i.e. number of pages
+	 * scanned. This makes it possible to set desired reaction time
+	 * and serves as a ratelimit.
+	 */
+	pressure = scale - (reclaimed * scale / scanned);
+	pressure = pressure * 100 / scale;
+
+	pr_debug("%s: %3lu  (s: %lu  r: %lu)\n", __func__, pressure,
+		 scanned, reclaimed);
+
+	return pressure;
+}
+
+static int reclaim_task_thread(void *p)
+{
+	int selected_tasksize;
+	struct reclaim_param rp;
+	unsigned long flags;
+
+	init_completion(&reclaim_completion);
+
+	while (1) {
+		wait_for_completion(&reclaim_completion);
+
+		mutex_lock(&reclaim_mutex);
+		if (!selected_task)
+			goto reclaim_end;
+
+		if (selected_task->exit_state || !selected_task->mm) {
+			put_task_struct(selected_task);
+			goto reclaim_end;
+		}
+
+		task_lock(selected_task);
+		selected_tasksize = get_mm_rss(selected_task->mm);
+		if (!selected_tasksize) {
+			if (lock_task_sighand(selected_task, &flags)) {
+				selected_task->signal->oom_score_adj = OOM_SCORE_SERVICE_B_ADJ;
+				unlock_task_sighand(selected_task, &flags);
+			}
+			task_unlock(selected_task);
+			put_task_struct(selected_task);
+			goto reclaim_end;
+		}
+
+		decrease_task_oom_score_adj(selected_task);
+		task_unlock(selected_task);
+
+		rp = reclaim_task_file_anon(selected_task, selected_tasksize);
+
+		if (memory_pressure_level <=
+			memory_calc_pressure(selected_tasksize, rp.nr_reclaimed)) {
+			if (selected_task->signal->oom_score_adj <=
+				OOM_SCORE_SERVICE_B_ADJ - 1) {
+				send_sig(SIGKILL, selected_task, 0);
+				set_tsk_thread_flag(selected_task, TIF_MEMDIE);
+			} else {
+				task_lock(selected_task);
+				if (lock_task_sighand(selected_task, &flags)) {
+					selected_task->signal->oom_score_adj = OOM_SCORE_SERVICE_B_ADJ;
+					unlock_task_sighand(selected_task, &flags);
+				}
+				task_unlock(selected_task);
+			}
+			++reclaim_fail;
+		} else {
+			++reclaim_success;
+		}
+		put_task_struct(selected_task);
+
+		if (RECLAIM_WINDOWS_SIZE <= reclaim_success + reclaim_fail) {
+			adjust_memory_pressure_level();
+			reclaim_success = 0;
+			reclaim_fail = 0;
+		}
+
+reclaim_end:
+		init_completion(&reclaim_completion);
+		mutex_unlock(&reclaim_mutex);
+	}
+
+	return 0;
+}
+#endif
+
 static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
@@ -268,6 +526,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	int rem = 0;
 	int tasksize;
 	int i;
+	int ret = 0;
 	short min_score_adj = OOM_SCORE_ADJ_MAX + 1;
 	int minfree = 0;
 	int selected_tasksize = 0;
@@ -276,6 +535,10 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	int other_free;
 	int other_file;
 	unsigned long nr_to_scan = sc->nr_to_scan;
+#ifdef CONFIG_HSWAP
+	int task_anon_size;
+	int selected_task_anon_size = 0;
+#endif
 
 	if (nr_to_scan > 0) {
 		if (mutex_lock_interruptible(&scan_mutex) < 0)
@@ -305,10 +568,13 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			break;
 		}
 	}
-	if (nr_to_scan > 0)
+	if (nr_to_scan > 0) {
+		ret = adjust_minadj(&min_score_adj);
 		lowmem_print(3, "lowmem_shrink %lu, %x, ofree %d %d, ma %hd\n",
 				nr_to_scan, sc->gfp_mask, other_free,
 				other_file, min_score_adj);
+	}
+
 	rem = global_page_state(NR_ACTIVE_ANON) +
 		global_page_state(NR_ACTIVE_FILE) +
 		global_page_state(NR_INACTIVE_ANON) +
@@ -319,6 +585,10 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 
 		if (nr_to_scan > 0)
 			mutex_unlock(&scan_mutex);
+
+		if ((min_score_adj == OOM_SCORE_ADJ_MAX + 1) &&
+			(nr_to_scan > 0))
+			trace_almk_shrink(0, ret, other_free, other_file, 0);
 
 		return rem;
 	}
@@ -356,6 +626,9 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			continue;
 		}
 		tasksize = get_mm_rss(p->mm);
+#ifdef CONFIG_HSWAP
+		task_anon_size = get_mm_counter(p->mm, MM_ANONPAGES);
+#endif
 		task_unlock(p);
 		if (tasksize <= 0)
 			continue;
@@ -368,15 +641,45 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		}
 		selected = p;
 		selected_tasksize = tasksize;
+#ifdef CONFIG_HSWAP
+		selected_task_anon_size = task_anon_size;
+#endif
 		selected_oom_score_adj = oom_score_adj;
 		lowmem_print(3, "select '%s' (%d), adj %hd, size %d, to kill\n",
 			     p->comm, p->pid, oom_score_adj, tasksize);
 	}
 	if (selected) {
+#ifdef CONFIG_HSWAP
+		if (reclaim_task_is_ok(selected_task_anon_size)) {
+			if (mutex_trylock(&reclaim_mutex)) {
+				get_task_struct(selected);
+				selected_task = selected;
+				complete(&reclaim_completion);
+				mutex_unlock(&reclaim_mutex);
+				rem -= selected_tasksize;
+			}
+
+			rcu_read_unlock();
+			/* give the system time to reclaim the memory */
+			msleep_interruptible(20);
+			mutex_unlock(&scan_mutex);
+			return rem;
+		}
+#endif
 		lowmem_print(1, "Killing '%s' (%d), adj %hd,\n" \
 				"   to free %ldkB on behalf of '%s' (%d) because\n" \
 				"   cache %ldkB is below limit %ldkB for oom_score_adj %hd\n" \
-				"   Free memory is %ldkB above reserved.\n" \
+				"   Free memory is %ldkB above reserved.\n",
+			     selected->comm, selected->pid,
+			     selected_oom_score_adj,
+			     selected_tasksize * (long)(PAGE_SIZE / 1024),
+			     current->comm, current->pid,
+			     other_file * (long)(PAGE_SIZE / 1024),
+			     minfree * (long)(PAGE_SIZE / 1024),
+			     min_score_adj,
+			     other_free * (long)(PAGE_SIZE / 1024));
+
+		lowmem_print(2, "\n" \
 				"   Free CMA is %ldkB\n" \
 				"   Total reserve is %ldkB\n" \
 				"   Total free pages is %ldkB\n" \
@@ -385,14 +688,6 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 				"   Slab UnReclaimable is %ldkB\n" \
 				"   Total Slab is %ldkB\n" \
 				"   GFP mask is 0x%x\n",
-			     selected->comm, selected->pid,
-			     selected_oom_score_adj,
-			     selected_tasksize * (long)(PAGE_SIZE / 1024),
-			     current->comm, current->pid,
-			     other_file * (long)(PAGE_SIZE / 1024),
-			     minfree * (long)(PAGE_SIZE / 1024),
-			     min_score_adj,
-			     other_free * (long)(PAGE_SIZE / 1024),
 			     global_page_state(NR_FREE_CMA_PAGES) *
 				(long)(PAGE_SIZE / 1024),
 			     totalreserve_pages * (long)(PAGE_SIZE / 1024),
@@ -423,8 +718,12 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		rcu_read_unlock();
 		/* give the system time to free up the memory */
 		msleep_interruptible(20);
-	} else
+		trace_almk_shrink(selected_tasksize, ret,
+			other_free, other_file, selected_oom_score_adj);
+	} else {
+		trace_almk_shrink(1, ret, other_free, other_file, 0);
 		rcu_read_unlock();
+	}
 
 	lowmem_print(4, "lowmem_shrink %lu, %x, return %d\n",
 		     nr_to_scan, sc->gfp_mask, rem);
@@ -439,7 +738,15 @@ static struct shrinker lowmem_shrinker = {
 
 static int __init lowmem_init(void)
 {
+#ifdef CONFIG_HSWAP
+	struct task_struct *reclaim_tsk;
+#endif
 	register_shrinker(&lowmem_shrinker);
+#ifdef CONFIG_HSWAP
+	memory_pressure_level = RECLAIM_SUCCESS_RATIO;
+	reclaim_tsk = kthread_run(reclaim_task_thread, NULL, "reclaim_task");
+#endif
+	vmpressure_notifier_register(&lmk_vmpr_nb);
 	return 0;
 }
 

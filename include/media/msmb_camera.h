@@ -55,7 +55,10 @@
 #define MSM_CAMERA_SUBDEV_SENSOR_INIT  14
 #define MSM_CAMERA_SUBDEV_OIS          15
 #define MSM_CAMERA_SUBDEV_FLASH        16
-
+/*                                                        */
+#define MSM_CAMERA_SUBDEV_PROXY        17
+/*                                                        */
+#define MSM_CAMERA_SUBDEV_TCS		   18
 #define MSM_MAX_CAMERA_SENSORS  5
 
 /* The below macro is defined to put an upper limit on maximum
@@ -89,7 +92,8 @@
 #define MSM_CAMERA_MAPPING_CFG  (MSM_CAMERA_EVENT_MIN + 5)
 #define MSM_CAMERA_MAPPING_SES  (MSM_CAMERA_EVENT_MIN + 6)
 #define MSM_CAMERA_MSM_NOTIFY   (MSM_CAMERA_EVENT_MIN + 7)
-#define MSM_CAMERA_EVENT_MAX    (MSM_CAMERA_EVENT_MIN + 8)
+#define MSM_CAMERA_SHUTDOWN     (MSM_CAMERA_EVENT_MIN + 8)
+#define MSM_CAMERA_EVENT_MAX    (MSM_CAMERA_EVENT_MIN + 9)
 
 /* data.command */
 #define MSM_CAMERA_PRIV_S_CROP		 (V4L2_CID_PRIVATE_BASE + 1)

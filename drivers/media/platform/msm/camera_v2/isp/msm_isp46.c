@@ -597,7 +597,7 @@ static long msm_vfe46_reset_hardware(struct vfe_device *vfe_dev,
 
 	if (blocking_call) {
 		rc = wait_for_completion_timeout(
-			&vfe_dev->reset_complete, msecs_to_jiffies(50));
+			&vfe_dev->reset_complete, msecs_to_jiffies(100)); //                                                                                         
 		if (rc <= 0) {
 			pr_err("%s:%d failed: reset timeout\n", __func__,
 				__LINE__);
@@ -1181,7 +1181,10 @@ static void msm_vfe46_update_camif_state(struct vfe_device *vfe_dev,
 		msm_camera_io_w_mb(0x1, vfe_dev->vfe_base + 0x58);
 
 		val = msm_camera_io_r(vfe_dev->vfe_base + 0x5C);
-		val |= 0xF5;
+		/*                                                     */
+		val |= 0xF7;
+//		val |= 0xF5;
+		/*                                                     */
 		msm_camera_io_w_mb(val, vfe_dev->vfe_base + 0x5C);
 
 		/* configure EPOCH0 for 20 lines */

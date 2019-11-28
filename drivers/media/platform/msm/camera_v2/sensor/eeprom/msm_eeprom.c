@@ -17,6 +17,7 @@
 #include "msm_sd.h"
 #include "msm_cci.h"
 #include "msm_eeprom.h"
+#include <soc/qcom/lge/board_lge.h>
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
@@ -196,10 +197,59 @@ static int read_eeprom_memory(struct msm_eeprom_ctrl_t *e_ctrl,
 	return rc;
 }
 
+/*                      */
+#if defined(CONFIG_MACH_MSM8994_Z2)
+static int verify_eeprom_data(struct msm_eeprom_ctrl_t *e_ctrl)
+{
+	int k, r_g, b_g, g_g;
+	int awb_checksum, lsc_checksum_5k, lsc_checksum_4k;
+	int lsc_datasum_5k, lsc_datasum_4k, lsc_cal_5k, lsc_cal_4k;
+	int rc = -1;
+
+	lsc_datasum_5k = 0;
+	lsc_datasum_4k = 0;
+	lsc_cal_5k = 0;
+	lsc_cal_4k = 0;
+
+	r_g =  (e_ctrl->cal_data.mapdata[0x0001]*256) + e_ctrl->cal_data.mapdata[0x0000];
+	b_g = (e_ctrl->cal_data.mapdata[0x0003]*256) + e_ctrl->cal_data.mapdata[0x0002];
+	g_g = (e_ctrl->cal_data.mapdata[0x0005]*256) + e_ctrl->cal_data.mapdata[0x0004];
+	awb_checksum = (e_ctrl->cal_data.mapdata[0x0006]*256) + e_ctrl->cal_data.mapdata[0x0007];
+
+	for (k = 0; k < (17 * 13 * 4); k++) {
+		lsc_datasum_5k += e_ctrl->cal_data.mapdata[0x000C+k];
+		lsc_cal_5k = lsc_datasum_5k & 0xffff;
+	}
+
+	for (k = 0; k < (17 * 13 * 4); k++) {
+		lsc_datasum_4k += (e_ctrl->cal_data.mapdata[0x038A+k]);
+		lsc_cal_4k = lsc_datasum_4k & 0xffff;
+	}
+
+	lsc_checksum_5k = (e_ctrl->cal_data.mapdata[0x0380]*256) + e_ctrl->cal_data.mapdata[0x0381];
+	lsc_checksum_4k = (e_ctrl->cal_data.mapdata[0x06FE]*256) + e_ctrl->cal_data.mapdata[0x06FF];
+
+	if(((r_g + b_g + g_g) == awb_checksum)
+	   && (lsc_cal_5k == lsc_checksum_5k) && (lsc_cal_4k == lsc_checksum_4k)){
+		rc = 0;
+	} else {
+		pr_err("r_g = %d, b_g = %d, g_g = %d, awb_checksum = %d\n", r_g, b_g, g_g, awb_checksum);
+		pr_err("lsc_cal_5k = %d, lsc_checksum_5k = %d\n", lsc_cal_5k, lsc_checksum_5k);
+		pr_err("lsc_cal_4k = %d, lsc_checksum_4k = %d\n", lsc_cal_4k, lsc_checksum_4k);
+	}
+
+	return rc;
+}
+#endif
+
 static int eeprom_config_read_cal_data(struct msm_eeprom_ctrl_t *e_ctrl,
 	struct msm_eeprom_cfg_data *cdata)
 {
 	int rc;
+#if defined (CONFIG_MACH_MSM8994_Z2)
+	uint16_t read_data;/*                             */
+	int j = 0;
+#endif
 
 	if (e_ctrl->read_eeprom == 0) {
 		rc = msm_camera_power_up(&e_ctrl->eboard_info->power_info,
@@ -208,11 +258,60 @@ static int eeprom_config_read_cal_data(struct msm_eeprom_ctrl_t *e_ctrl,
 			pr_err("failed rc %d\n", rc);
 			goto power_down;
 		}
+/*                             */
+#if defined (CONFIG_MACH_MSM8994_Z2)
+		if(!strncmp(rev_str[lge_get_board_revno()], "rev_b", 5)) {//rev_b only
+			e_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+
+			e_ctrl->i2c_client.i2c_func_tbl->i2c_read(
+						&(e_ctrl->i2c_client), 0x700,
+						&read_data, 1);//OIS_MAKER_ID_ADDR
+			pr_err("%s: read_data =0x%x\n", __func__, read_data);
+			if (read_data == 0x01) {//on-semi for imx214
+				if (strcmp(e_ctrl->eboard_info->eeprom_name, "imx214_eeprom") != 0) {
+						rc = -1;
+						pr_err("%s:imx135_eeprom goto power_down probe ignored ", __func__);
+						goto power_down;
+				}
+			} else { //0x02.0x05: rohm	0x03:fuji
+				if (strcmp(e_ctrl->eboard_info->eeprom_name, "imx135_eeprom") != 0) {
+					rc = -1;
+					pr_err("%s: imx214_eeprom goto power_down prboe ignored ", __func__);
+					goto power_down;
+				}
+			}
+		}
+	/*                      */
+		if (!strcmp(e_ctrl->eboard_info->eeprom_name, "imx135_eeprom")) {
+			j = 3; //Retry cnt
+			do {
+				rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
+				if (rc < 0) {
+					pr_err("%s read_eeprom_memory failed\n", __func__);
+					goto power_down;
+				}
+
+				if(!verify_eeprom_data(e_ctrl)) {
+					pr_err("%s: eeprom data checksum success!\n", __func__);
+					break;
+				} else {
+					pr_err("%s: eeprom data checksum failed!, retry_cnt = %d\n", __func__, j--);
+				}
+			} while(j);
+		} else {
+			rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
+			if (rc < 0) {
+				pr_err("%s read_eeprom_memory failed\n", __func__);
+				goto power_down;
+			}
+		}
+#else
 		rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
 		if (rc < 0) {
 			pr_err("Sensor EEPROM Read Failed\n");
 			goto power_down;
 		}
+#endif
 		e_ctrl->is_supported |= msm_eeprom_match_crc(&e_ctrl->cal_data);
 		CDBG("e_ctrl is supported %d\n", e_ctrl->is_supported);
 		rc = msm_camera_power_down(&e_ctrl->eboard_info->power_info,
@@ -467,7 +566,9 @@ static struct msm_cam_clk_info cam_8960_clk_info[] = {
 };
 
 static struct msm_cam_clk_info cam_8974_clk_info[] = {
-	[SENSOR_CAM_MCLK] = {"cam_src_clk", 19200000},
+	/*                             */
+	[SENSOR_CAM_MCLK] = {"cam_src_clk", 24000000},
+	/*                             */
 	[SENSOR_CAM_CLK] = {"cam_clk", 0},
 };
 
@@ -613,7 +714,12 @@ ERROR3:
 ERROR2:
 	kfree(power_info->cam_vreg);
 ERROR1:
-	kfree(power_info->power_setting);
+/*                             */
+	if (power_info->power_setting)
+		kfree(power_info->power_setting);
+	if (power_info->power_down_setting)
+		kfree(power_info->power_down_setting);
+/*                             */
 	return rc;
 }
 
@@ -840,6 +946,10 @@ static int eeprom_config_read_cal_data32(struct msm_eeprom_ctrl_t *e_ctrl,
 	struct msm_eeprom_cfg_data32 *cdata32 =
 		(struct msm_eeprom_cfg_data32 *) arg;
 	struct msm_eeprom_cfg_data cdata;
+#if defined (CONFIG_MACH_MSM8994_Z2)
+	uint16_t read_data;/*                             */
+	int j = 0;
+#endif
 
 	cdata.cfgtype = cdata32->cfgtype;
 	cdata.is_supported = cdata32->is_supported;
@@ -851,11 +961,60 @@ static int eeprom_config_read_cal_data32(struct msm_eeprom_ctrl_t *e_ctrl,
 			pr_err("failed rc %d\n", rc);
 			goto power_down;
 		}
+/*                             */
+#if defined (CONFIG_MACH_MSM8994_Z2)
+		if(!strncmp(rev_str[lge_get_board_revno()], "rev_b", 5)) {//rev_b only
+			e_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+
+			e_ctrl->i2c_client.i2c_func_tbl->i2c_read(
+						&(e_ctrl->i2c_client), 0x700,
+						&read_data, 1);//OIS_MAKER_ID_ADDR
+			pr_err("%s: read_data =0x%x\n", __func__, read_data);
+			if (read_data == 0x01) {//on-semi for imx214
+				if (strcmp(e_ctrl->eboard_info->eeprom_name, "imx214_eeprom") != 0) {
+						rc = -1;
+						pr_err("%s:imx135_eeprom goto power_down probe ignored ", __func__);
+						goto power_down;
+				}
+			} else { //0x02.0x05: rohm	0x03:fuji
+				if (strcmp(e_ctrl->eboard_info->eeprom_name, "imx135_eeprom") != 0) {
+					rc = -1;
+					pr_err("%s: imx214_eeprom goto power_down prboe ignored ", __func__);
+					goto power_down;
+				}
+			}
+		}
+	/*                      */
+		if (!strcmp(e_ctrl->eboard_info->eeprom_name, "imx135_eeprom")) {
+			j = 3; //Retry cnt
+			do {
+				rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
+				if (rc < 0) {
+					pr_err("%s read_eeprom_memory failed\n", __func__);
+					goto power_down;
+				}
+
+				if(!verify_eeprom_data(e_ctrl)) {
+					pr_err("%s: eeprom data checksum success!\n", __func__);
+					break;
+				} else {
+					pr_err("%s: eeprom data checksum failed!, retry_cnt = %d\n", __func__, j--);
+				}
+			} while(j);
+		} else {
+			rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
+			if (rc < 0) {
+				pr_err("%s read_eeprom_memory failed\n", __func__);
+				goto power_down;
+			}
+		}
+#else
 		rc = read_eeprom_memory(e_ctrl, &e_ctrl->cal_data);
 		if (rc < 0) {
 			pr_err("EEPROM Read Failed\n");
 			goto power_down;
 		}
+#endif
 		e_ctrl->is_supported |= msm_eeprom_match_crc(&e_ctrl->cal_data);
 		CDBG("e_ctrl is supported %d\n", e_ctrl->is_supported);
 		rc = msm_camera_power_down(&e_ctrl->eboard_info->power_info,
@@ -966,7 +1125,6 @@ static int msm_eeprom_platform_probe(struct platform_device *pdev)
 	struct msm_eeprom_board_info *eb_info = NULL;
 	struct device_node *of_node = pdev->dev.of_node;
 	struct msm_camera_power_ctrl_t *power_info = NULL;
-
 	CDBG("%s E\n", __func__);
 
 	e_ctrl = kzalloc(sizeof(*e_ctrl), GFP_KERNEL);
@@ -1052,8 +1210,8 @@ static int msm_eeprom_platform_probe(struct platform_device *pdev)
 
 	rc = of_property_read_string(of_node, "qcom,eeprom-name",
 		&eb_info->eeprom_name);
-	CDBG("%s qcom,eeprom-name %s, rc %d\n", __func__,
-		eb_info->eeprom_name, rc);
+	pr_err("%s qcom,eeprom-name %s, rc %d\n", __func__,
+		eb_info->eeprom_name, rc);/*               */
 	if (rc < 0) {
 		pr_err("%s failed %d\n", __func__, __LINE__);
 		goto board_free;
@@ -1092,7 +1250,7 @@ static int msm_eeprom_platform_probe(struct platform_device *pdev)
 #endif
 
 	e_ctrl->is_supported = 1;
-	CDBG("%s X\n", __func__);
+	pr_err("%s X\n", __func__);//                 
 	return rc;
 
 free_datamap:

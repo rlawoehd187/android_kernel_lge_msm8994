@@ -68,6 +68,9 @@ EXPORT_SYMBOL(processor_id);
 unsigned long elf_hwcap __read_mostly;
 EXPORT_SYMBOL_GPL(elf_hwcap);
 
+unsigned int system_rev;
+EXPORT_SYMBOL(system_rev);
+
 unsigned int boot_reason;
 EXPORT_SYMBOL(boot_reason);
 

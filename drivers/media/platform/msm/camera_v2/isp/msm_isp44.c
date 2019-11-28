@@ -1109,7 +1109,9 @@ static void msm_vfe44_update_camif_state(struct vfe_device *vfe_dev,
 		msm_camera_io_w_mb(0x1, vfe_dev->vfe_base + 0x24);
 
 		val = msm_camera_io_r(vfe_dev->vfe_base + 0x28);
-		val |= 0xF5;
+		/*LGCHANGE_S,QCT Patch for camif error 15.03.24*/
+		/*val |= 0xF5;*/
+		val |= 0xF7;
 		msm_camera_io_w_mb(val, vfe_dev->vfe_base + 0x28);
 		msm_camera_io_w_mb(0x140000, vfe_dev->vfe_base + 0x318);
 

@@ -12,6 +12,7 @@
 #ifndef __WCD9XXX_MBHC_H__
 #define __WCD9XXX_MBHC_H__
 
+#include <linux/switch.h>
 #include "wcd9xxx-resmgr.h"
 #include "wcdcal-hwdep.h"
 
@@ -350,7 +351,9 @@ struct wcd9xxx_mbhc {
 	struct firmware_cal *mbhc_cal;
 
 	struct delayed_work mbhc_insert_dwork;
-
+#ifdef CONFIG_MACH_LGE
+	struct delayed_work mbhc_detect_for_boot;
+#endif
 	u8 current_plug;
 	struct work_struct correct_plug_swch;
 	/*
@@ -411,9 +414,14 @@ struct wcd9xxx_mbhc {
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_poke;
 	struct dentry *debugfs_mbhc;
+#ifdef CONFIG_SND_LGE_MBHC_BUTTON_CAL
+	struct dentry *debugfs_button_cal;
+#endif
 #endif
 
 	struct mutex mbhc_lock;
+
+	struct switch_dev sdev;
 };
 
 #define WCD9XXX_MBHC_CAL_SIZE(buttons, rload) ( \

@@ -18,7 +18,6 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/power_supply.h>
-#include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -28,6 +27,7 @@
 #include <linux/msm_bcl.h>
 #include <linux/power_supply.h>
 #include <linux/cpumask.h>
+#include <linux/delay.h>
 
 #define BCL_DEV_NAME "battery_current_limit"
 #define BCL_NAME_LENGTH 20
@@ -41,7 +41,6 @@
 #define MIN_BCL_POLL_INTERVAL 10
 #define BATTERY_VOLTAGE_MIN 3400
 #define BTM_8084_FREQ_MITIG_LIMIT 1958400
-
 #define BCL_FETCH_DT_U32(_dev, _key, _search_str, _ret, _out, _exit) do { \
 		_key = _search_str; \
 		_ret = of_property_read_u32(_dev, _key, &_out); \
@@ -177,6 +176,10 @@ struct bcl_context {
 	struct bcl_threshold vbat_high_thresh;
 	struct bcl_threshold vbat_low_thresh;
 	uint32_t bcl_p_freq_max;
+#ifdef CONFIG_LGE_PM_BCL
+	uint32_t bcl_p_cluster0_freq_max;
+	uint32_t bcl_p_cluster1_freq_max;
+#endif
 };
 
 enum bcl_threshold_state {
@@ -195,7 +198,9 @@ static uint32_t bcl_frequency_mask;
 static struct work_struct bcl_hotplug_work;
 static DEFINE_MUTEX(bcl_hotplug_mutex);
 static bool bcl_hotplug_enabled;
+#ifndef CONFIG_LGE_PM
 static uint32_t battery_soc_val = 100;
+#endif
 static uint32_t soc_low_threshold;
 static struct power_supply bcl_psy;
 static const char bcl_psy_name[] = "bcl";
@@ -206,7 +211,7 @@ static void bcl_update_online_mask(void)
 	get_online_cpus();
 	cpumask_copy(bcl_cpu_online_mask, cpu_online_mask);
 	put_online_cpus();
-	pr_debug("BCL online Mask tracked %u\n",
+	pr_err("BCL online Mask tracked %u\n",
 				cpumask_weight(bcl_cpu_online_mask));
 }
 
@@ -218,9 +223,12 @@ static void __ref bcl_handle_hotplug(struct work_struct *work)
 	mutex_lock(&bcl_hotplug_mutex);
 	if (cpumask_empty(bcl_cpu_online_mask))
 		bcl_update_online_mask();
-
-	if  (bcl_soc_state == BCL_LOW_THRESHOLD
+#ifndef CONFIG_LGE_PM
+	if  (battery_soc_val <= soc_low_threshold
 		|| bcl_vph_state == BCL_LOW_THRESHOLD)
+#else
+	if  (bcl_vph_state == BCL_LOW_THRESHOLD)
+#endif
 		bcl_hotplug_request = bcl_soc_hotplug_mask;
 	else if (bcl_ibat_state == BCL_HIGH_THRESHOLD)
 		bcl_hotplug_request = bcl_hotplug_mask;
@@ -272,7 +280,7 @@ static int __ref bcl_cpu_ctrl_callback(struct notifier_block *nfb,
 	switch (action & ~CPU_TASKS_FROZEN) {
 	case CPU_UP_PREPARE:
 		if (!cpumask_test_and_set_cpu(cpu, bcl_cpu_online_mask))
-			pr_debug("BCL online Mask: %u\n",
+			pr_err("BCL online Mask: %u\n",
 				cpumask_weight(bcl_cpu_online_mask));
 		if (bcl_hotplug_request & BIT(cpu)) {
 			pr_info("preventing CPU%d from coming online\n", cpu);
@@ -298,6 +306,11 @@ static struct notifier_block __refdata bcl_cpu_notifier = {
 	.notifier_call = bcl_cpu_ctrl_callback,
 };
 
+#ifdef CONFIG_LGE_PM_BCL
+#define CLUSTER0_MAX_CPU (3)
+#define CLUSTER1_MAX_CPU (7)
+#endif
+
 static int bcl_cpufreq_callback(struct notifier_block *nfb,
 		unsigned long event, void *data)
 {
@@ -309,13 +322,27 @@ static int bcl_cpufreq_callback(struct notifier_block *nfb,
 
 	switch (event) {
 	case CPUFREQ_INCOMPATIBLE:
+#ifndef CONFIG_LGE_PM
 		if (bcl_vph_state == BCL_LOW_THRESHOLD
 			|| bcl_ibat_state == BCL_HIGH_THRESHOLD
-			|| bcl_soc_state == BCL_LOW_THRESHOLD) {
+			|| battery_soc_val <= soc_low_threshold) {
+#else
+		if (bcl_vph_state == BCL_LOW_THRESHOLD
+			|| bcl_ibat_state == BCL_HIGH_THRESHOLD) {
+#endif
 			max_freq = (gbcl->bcl_monitor_type
 				== BCL_IBAT_MONITOR_TYPE) ? gbcl->btm_freq_max
 				: gbcl->bcl_p_freq_max;
+#ifdef CONFIG_LGE_PM_BCL
+			if (gbcl->bcl_monitor_type != BCL_IBAT_MONITOR_TYPE) {
+				if (policy->cpu <= CLUSTER0_MAX_CPU)
+					max_freq = gbcl->bcl_p_cluster0_freq_max;
+				else if (policy->cpu <= CLUSTER1_MAX_CPU)
+					max_freq = gbcl->bcl_p_cluster1_freq_max;
+			}
+#endif
 		}
+
 		pr_debug("Requesting Max freq:%u for CPU%d\n",
 			max_freq, policy->cpu);
 		cpufreq_verify_within_limits(policy, 0,
@@ -347,6 +374,7 @@ static void update_cpu_freq(void)
 	put_online_cpus();
 }
 
+#ifndef CONFIG_LGE_PM
 static void power_supply_callback(struct power_supply *psy)
 {
 	static struct power_supply *bms_psy;
@@ -377,6 +405,7 @@ static void power_supply_callback(struct power_supply *psy)
 		update_cpu_freq();
 	}
 }
+#endif
 
 static int bcl_get_battery_voltage(int *vbatt_mv)
 {
@@ -694,7 +723,9 @@ static void bcl_periph_mode_set(enum bcl_device_mode mode)
 		 * power state changes. Make sure we read the current SoC
 		 * and mitigate.
 		 */
+#ifndef CONFIG_LGE_PM
 		power_supply_callback(&bcl_psy);
+#endif
 		ret = power_supply_register(gbcl->dev, &bcl_psy);
 		if (ret < 0) {
 			pr_err("Unable to register bcl_psy rc = %d\n", ret);
@@ -900,6 +931,12 @@ show_bcl(adc_interval_us, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
 	adc_time_to_uSec(gbcl, gbcl->btm_adc_interval) : 0, "%d\n")
 show_bcl(freq_max, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
 	gbcl->btm_freq_max : gbcl->bcl_p_freq_max, "%u\n")
+#ifdef CONFIG_LGE_PM_BCL
+show_bcl(cluster0_freq_max, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
+	gbcl->btm_freq_max : gbcl->bcl_p_cluster0_freq_max, "%u\n")
+show_bcl(cluster1_freq_max, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
+	gbcl->btm_freq_max : gbcl->bcl_p_cluster1_freq_max, "%u\n")
+#endif
 show_bcl(vph_high, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
 	gbcl->btm_vph_high_thresh : gbcl->vbat_high_thresh.trip_value, "%d\n")
 show_bcl(vph_low, (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
@@ -1185,6 +1222,44 @@ static ssize_t freq_max_store(struct device *dev,
 	return count;
 }
 
+#ifdef CONFIG_LGE_PM_BCL
+static ssize_t cluster0_freq_max_store(struct device *dev,
+					struct device_attribute*attr,
+					const char *buf, size_t count)
+{
+	int val = 0;
+	int ret = 0;
+	uint32_t *freq_lim = NULL;
+
+	ret = convert_to_int(buf, &val);
+	if (ret)
+		return ret;
+	freq_lim = (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
+		&gbcl->btm_freq_max : &gbcl->bcl_p_cluster0_freq_max;
+	*freq_lim = max_t(uint32_t, val, gbcl->thermal_freq_limit);
+
+	return count;
+}
+
+static ssize_t cluster1_freq_max_store(struct device *dev,
+					struct device_attribute*attr,
+					const char *buf, size_t count)
+{
+	int val = 0;
+	int ret = 0;
+	uint32_t *freq_lim = NULL;
+
+	ret = convert_to_int(buf, &val);
+	if (ret)
+		return ret;
+	freq_lim = (gbcl->bcl_monitor_type == BCL_IBAT_MONITOR_TYPE) ?
+		&gbcl->btm_freq_max : &gbcl->bcl_p_cluster1_freq_max;
+	*freq_lim = max_t(uint32_t, val, gbcl->thermal_freq_limit);
+
+	return count;
+}
+#endif
+
 static ssize_t vph_low_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
@@ -1301,6 +1376,12 @@ static struct device_attribute btm_dev_attr[] = {
 	__ATTR(low_threshold_ua, 0644, low_ua_show, low_ua_store),
 	__ATTR(adc_interval_us, 0444, adc_interval_us_show, NULL),
 	__ATTR(freq_max, 0644, freq_max_show, freq_max_store),
+#ifdef CONFIG_LGE_PM_BCL
+	__ATTR(cluster0_freq_max, 0644, cluster0_freq_max_show,
+			cluster0_freq_max_store),
+	__ATTR(cluster1_freq_max, 0644, cluster1_freq_max_show,
+			cluster1_freq_max_store),
+#endif
 	__ATTR(vph_high_thresh_uv, 0644, vph_high_show, vph_high_store),
 	__ATTR(vph_low_thresh_uv, 0644, vph_low_show, vph_low_store),
 	__ATTR(thermal_freq_limit, 0444, freq_limit_show, NULL),
@@ -1533,6 +1614,12 @@ static int probe_bcl_periph_prop(struct bcl_context *bcl)
 		bcl->ibat_high_thresh.trip_value, ibat_probe_exit);
 	BCL_FETCH_DT_U32(ibat_node, key, "qcom,mitigation-freq-khz", ret,
 		bcl->bcl_p_freq_max, ibat_probe_exit);
+#ifdef CONFIG_LGE_PM_BCL
+	BCL_FETCH_DT_U32(ibat_node, key, "qcom,cluster0-freq-khz", ret,
+		bcl->bcl_p_cluster0_freq_max, ibat_probe_exit);
+	BCL_FETCH_DT_U32(ibat_node, key, "qcom,cluster1-freq-khz", ret,
+		bcl->bcl_p_cluster1_freq_max, ibat_probe_exit);
+#endif
 	BCL_FETCH_DT_U32(ibat_node, key, "qcom,vph-high-threshold-uv", ret,
 		bcl->vbat_high_thresh.trip_value, ibat_probe_exit);
 	BCL_FETCH_DT_U32(ibat_node, key, "qcom,vph-low-threshold-uv", ret,
@@ -1549,6 +1636,12 @@ static int probe_bcl_periph_prop(struct bcl_context *bcl)
 		= bcl->ibat_low_thresh.trip_data = (void *) bcl;
 	get_vdd_rstr_freq(bcl, ibat_node);
 	bcl->bcl_p_freq_max = max(bcl->bcl_p_freq_max, bcl->thermal_freq_limit);
+#ifdef CONFIG_LGE_PM_BCL
+	bcl->bcl_p_cluster0_freq_max = max(bcl->bcl_p_cluster0_freq_max,
+			bcl->thermal_freq_limit);
+	bcl->bcl_p_cluster1_freq_max = max(bcl->bcl_p_cluster1_freq_max,
+			bcl->thermal_freq_limit);
+#endif
 
 	bcl->btm_mode = BCL_MONITOR_DISABLED;
 	bcl->bcl_monitor_type = BCL_IBAT_PERIPH_MONITOR_TYPE;
@@ -1774,7 +1867,9 @@ static int bcl_probe(struct platform_device *pdev)
 	bcl_psy.get_property     = bcl_battery_get_property;
 	bcl_psy.set_property     = bcl_battery_set_property;
 	bcl_psy.num_properties = 0;
+#ifndef CONFIG_LGE_PM
 	bcl_psy.external_power_changed = power_supply_callback;
+#endif
 
 	gbcl = bcl;
 	platform_set_drvdata(pdev, bcl);

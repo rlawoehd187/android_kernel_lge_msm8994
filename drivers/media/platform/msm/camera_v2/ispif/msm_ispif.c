@@ -98,7 +98,7 @@ static int msm_ispif_reset_hw(struct ispif_device *ispif)
 	long timeout = 0;
 	struct clk *reset_clk1[ARRAY_SIZE(ispif_8626_reset_clk_info)];
 	ispif->clk_idx = 0;
-
+	
 	rc = msm_ispif_get_clk_info(ispif, ispif->pdev,
 		ispif_ahb_clk_info, ispif_clk_info);
 	if (rc < 0) {
@@ -273,7 +273,6 @@ static int msm_ispif_clk_ahb_enable(struct ispif_device *ispif, int enable)
 		/* Older ISPIF versiond don't need ahb clokc */
 		return 0;
 	}
-
 	rc = msm_cam_clk_enable(&ispif->pdev->dev,
 		ispif_ahb_clk_info, ispif->ahb_clk,
 		ispif->num_ahb_clk, enable);
@@ -821,7 +820,7 @@ static int msm_ispif_restart_frame_boundary(struct ispif_device *ispif,
 		}
 		vfe_mask |= (1 << vfe_intf);
 	}
-
+/*LGCHANGE,QCT Patch camif error 15.04.02*/
 	rc = msm_cam_clk_enable(&ispif->pdev->dev,
 		ispif_clk_info, ispif->clk,
 		ispif->num_clk, 1);
@@ -867,6 +866,7 @@ static int msm_ispif_restart_frame_boundary(struct ispif_device *ispif,
 	}
 
 	pr_info("%s: ISPIF reset hw done", __func__);
+/*LGCHANGE,QCT Patch camif error 15.04.02*/
 	rc = msm_cam_clk_enable(&ispif->pdev->dev,
 		ispif_clk_info, ispif->clk,
 		ispif->num_clk, 0);
@@ -924,6 +924,7 @@ static int msm_ispif_restart_frame_boundary(struct ispif_device *ispif,
 end:
 	return rc;
 disable_clk:
+/*LGCHANGE,QCT Patch camif error 15.04.02*/
 	rc = msm_cam_clk_enable(&ispif->pdev->dev,
 		ispif_clk_info, ispif->clk,
 		ispif->num_clk, 0);
@@ -1191,6 +1192,8 @@ static int msm_ispif_init(struct ispif_device *ispif,
 		pr_err("%s: request_irq error = %d\n", __func__, rc);
 		goto error_irq;
 	}
+/*LGCHANGE,QCT Patch camif error 15.04.02*/
+	msm_ispif_reset_hw(ispif);
 
 	msm_ispif_reset_hw(ispif);
 
@@ -1445,6 +1448,13 @@ static int ispif_probe(struct platform_device *pdev)
 		if (!ispif->clk_mux_io)
 			pr_err("%s: no valid csi_mux region\n", __func__);
 	}
+
+	//                                           
+        ispif->fs_vfe = regulator_get(&pdev->dev, "vdd_vfe");
+
+	if (ispif->fs_vfe == NULL)
+		pr_err("%s: gdsc_vfe is null\n", __func__);
+	//                                           
 
 	v4l2_subdev_init(&ispif->msm_sd.sd, &msm_ispif_subdev_ops);
 	ispif->msm_sd.sd.internal_ops = &msm_ispif_internal_ops;

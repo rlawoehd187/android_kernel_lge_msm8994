@@ -32,6 +32,10 @@
 #include <soc/qcom/restart.h>
 #include <soc/qcom/watchdog.h>
 
+#ifdef CONFIG_LGE_HANDLE_PANIC
+#include <soc/qcom/lge/lge_handle_panic.h>
+#endif
+
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
@@ -63,7 +67,7 @@ static void *emergency_dload_mode_addr;
 static bool scm_dload_supported;
 
 static int dload_set(const char *val, struct kernel_param *kp);
-static int download_mode = 1;
+static int download_mode = 0;
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
 static int panic_prep_restart(struct notifier_block *this,
@@ -79,6 +83,10 @@ static struct notifier_block panic_blk = {
 
 int scm_set_dload_mode(int arg1, int arg2)
 {
+    pr_info("skip to SCM_DLOAD_CMD"); // CN01871926
+    return 0;
+
+#if 0
 	struct scm_desc desc = {
 		.args[0] = arg1,
 		.args[1] = arg2,
@@ -92,12 +100,15 @@ int scm_set_dload_mode(int arg1, int arg2)
 		return 0;
 	}
 
+    pr_err("scm_call: BOOT/SCM_DLOAD_CMD!");
+
 	if (!is_scm_armv8())
 		return scm_call_atomic2(SCM_SVC_BOOT, SCM_DLOAD_CMD, arg1,
 					arg2);
 
 	return scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_BOOT, SCM_DLOAD_CMD),
 				&desc);
+#endif
 }
 
 static void set_dload_mode(int on)
@@ -123,6 +134,7 @@ static bool get_dload_mode(void)
 	return dload_mode_enabled;
 }
 
+#ifndef CONFIG_LGE_HANDLE_PANIC
 static void enable_emergency_dload_mode(void)
 {
 	int ret;
@@ -147,6 +159,7 @@ static void enable_emergency_dload_mode(void)
 	if (ret)
 		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
 }
+#endif
 
 static int dload_set(const char *val, struct kernel_param *kp)
 {
@@ -246,11 +259,25 @@ static void msm_restart_prepare(const char *cmd)
 	}
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
+#if defined(CONFIG_MACH_LGE)
+	/*                                                                          */
+	if (cmd != NULL && !strncmp(cmd, "oem-90466252", 12)) {
+		pr_info("%s: PON_POWER_OFF_HARD_RESET\n", __func__);
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
+	} else if (true || get_dload_mode() || (cmd != NULL && cmd[0] != '\0') || (restart_mode == RESTART_DLOAD)) {
+		pr_info("%s: PON_POWER_OFF_WARM_RESET\n", __func__);
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+	} else {
+		pr_info("%s: PON_POWER_OFF_HARD_RESET\n", __func__);
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
+	}
+#else
 	if (need_warm_reset) {
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 	} else {
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 	}
+#endif
 
 	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
@@ -261,10 +288,22 @@ static void msm_restart_prepare(const char *cmd)
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RECOVERY);
 			__raw_writel(0x77665502, restart_reason);
+		} else if (!strncmp(cmd, "fota", 4)) {
+			__raw_writel(0x77665566, restart_reason);
 		} else if (!strcmp(cmd, "rtc")) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RTC);
 			__raw_writel(0x77665503, restart_reason);
+#ifdef CONFIG_LGE_LCD_OFF_DIMMING
+		} else if (!strncmp(cmd, "FOTA LCD off", 12)) {
+			__raw_writel(0x77665560, restart_reason);
+		} else if (!strncmp(cmd, "FOTA OUT LCD off", 16)) {
+			__raw_writel(0x77665561, restart_reason);
+		} else if (!strncmp(cmd, "LCD off", 7)) {
+			__raw_writel(0x77665562, restart_reason);
+#endif
+		} else if (!strncmp(cmd, "wallpaper_fail", 14)) {
+			__raw_writel(0x77665507, restart_reason);
 		} else if (!strcmp(cmd, "dm-verity device corrupted")) {
 			__raw_writel(0x77665508, restart_reason);
 		} else if (!strcmp(cmd, "dm-verity enforcing")) {
@@ -278,12 +317,24 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
+#ifndef CONFIG_LGE_HANDLE_PANIC
 		} else if (!strncmp(cmd, "edl", 3)) {
 			enable_emergency_dload_mode();
+#endif
 		} else {
 			__raw_writel(0x77665501, restart_reason);
 		}
 	}
+
+#ifdef CONFIG_LGE_HANDLE_PANIC
+	if (restart_mode == RESTART_DLOAD) {
+		set_dload_mode(0);
+		lge_set_restart_reason(LAF_DLOAD_MODE);
+	}
+
+	if (in_panic)
+		lge_set_panic_reason();
+#endif
 
 	flush_cache_all();
 

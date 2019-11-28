@@ -649,6 +649,14 @@ int mdss_mdp_perf_calc_pipe(struct mdss_mdp_pipe *pipe,
 	else
 		perf->mdp_clk_rate = rate;
 
+#if defined(CONFIG_Z2_LGD_POLED_PANEL)
+	if (pipe->src_fmt->is_yuv && src.h > src.w && pipe->vert_deci == 1) {
+		if ((src_h * 10 / dst.h) > 20) {
+			perf->mdp_clk_rate = fudge_factor(rate, 11, 10);
+			pr_debug("Change fudge_factor to 1.1\n");
+		}
+	}
+#endif
 	if (mixer->ctl->intf_num == MDSS_MDP_NO_INTF ||
 		mdata->disable_prefill ||
 		mixer->ctl->disable_prefill ||
@@ -2036,6 +2044,7 @@ int mdss_mdp_ctl_setup(struct mdss_mdp_ctl *ctl)
 	ctl->width = width;
 	ctl->height = height;
 	ctl->roi = (struct mdss_rect) {0, 0, width, height};
+     ctl->valid_roi = true;
 
 	mdss_mdp_get_interface_type(ctl, &intf_type, &needs_split);
 
@@ -2371,6 +2380,7 @@ int mdss_mdp_ctl_split_display_setup(struct mdss_mdp_ctl *ctl,
 	sctl->height = get_panel_yres(&pdata->panel_info);
 
 	sctl->roi = (struct mdss_rect){0, 0, sctl->width, sctl->height};
+     sctl->valid_roi = true;
 
 	ctl->mixer_left = mdss_mdp_mixer_alloc(ctl, MDSS_MDP_MIXER_TYPE_INTF,
 			false, 0);

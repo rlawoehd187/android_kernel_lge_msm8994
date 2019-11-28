@@ -820,10 +820,17 @@ static int system_suspend_handler(struct notifier_block *nb,
 			if (activity[cpu].sensor_id < 0)
 				continue;
 
+#ifdef CONFIG_LGE_PM
 			sensor_activate_trip(activity[cpu].sensor_id,
 				&activity[cpu].hi_threshold, false);
 			sensor_activate_trip(activity[cpu].sensor_id,
 				&activity[cpu].low_threshold, false);
+#else
+            sensor_activate_trip(activity[cpu].sensor_id,
+                &activity[cpu].hi_threshold, false);
+            sensor_activate_trip(activity[cpu].sensor_id,
+                &activity[cpu].low_threshold, false);
+#endif
 		}
 		break;
 	default:
@@ -1014,7 +1021,6 @@ static int msm_core_dev_probe(struct platform_device *pdev)
 	ret = of_property_read_u32(node, key, &poll_ms);
 	if (ret)
 		pr_info("msm-core initialized without polling period\n");
-
 
 	ret = uio_init(pdev);
 	if (ret)

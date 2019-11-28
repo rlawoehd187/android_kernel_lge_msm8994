@@ -88,6 +88,29 @@ static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
 static unsigned int default_above_hispeed_delay[] = {
 	DEFAULT_ABOVE_HISPEED_DELAY };
 
+#ifdef CONFIG_LGE_PM_CANCUN
+/* Cancun governor tunable variable */
+u32 cancun_gov_en = 1;
+u32 cancun_is_compact = 0;
+u32 cancun_is_gpubound = 1;
+u32 cancun_compact_target_load = 95;
+u32 cancun_gpu_target_load = 95;
+u32 cancun_gpubusy_thres = 60;
+u32 cancun_gpu_range_start_freq = 305000000;
+u32 cancun_gpu_range_end_freq = 450000000 ;
+u32 cancun_gpu_range_enter_time = 1000000;
+u32 cancun_gpu_range_out_time = 500000;
+u32 cancun_compact_opt_little_freq = 1248000;
+u32 cancun_compact_opt_big_freq = 1248000;
+u32 cancun_compact_disable = 0;
+
+/* Cancun governor variable*/
+u32 gpubound_status = 0;
+u32 compactmode_status = 0;
+u64 gpu_busytime =  0ULL;
+u64 gpu_idletime =  0ULL;
+#endif /*                    */
+
 struct cpufreq_interactive_tunables {
 	int usage_count;
 	/* Hi speed to bump to from lo speed when load burst (default max) */
@@ -289,6 +312,12 @@ static unsigned int freq_to_targetload(
 	return ret;
 }
 
+#ifdef CONFIG_LGE_PM_CANCUN
+int get_cancun_status(void)
+{
+	return compactmode_status;
+}
+#endif
 /*
  * If increasing frequencies never map to a lower target load then
  * choose_freq() will find the minimum frequency that does not exceed its
@@ -301,6 +330,7 @@ static unsigned int choose_freq(struct cpufreq_interactive_policyinfo *pcpu,
 	unsigned int prevfreq, freqmin, freqmax;
 	unsigned int tl;
 	int index;
+	unsigned int freq_rel = CPUFREQ_RELATION_L;
 
 	freqmin = 0;
 	freqmax = UINT_MAX;
@@ -309,6 +339,29 @@ static unsigned int choose_freq(struct cpufreq_interactive_policyinfo *pcpu,
 		prevfreq = freq;
 		tl = freq_to_targetload(pcpu->policy->governor_data, freq);
 
+#ifdef CONFIG_LGE_PM_CANCUN
+		if(cancun_gov_en){
+			if(gpubound_status){
+				tl = cancun_gpu_target_load;
+				freq_rel = CPUFREQ_RELATION_H;
+			}
+			if(compactmode_status){
+				if(pcpu->policy->cpu < 2){
+					if(freq >= cancun_compact_opt_little_freq){
+						tl = cancun_compact_target_load;
+						freq_rel = CPUFREQ_RELATION_H;
+					}
+				}
+				else{
+					if(freq >= cancun_compact_opt_big_freq){
+						tl = cancun_compact_target_load;
+						freq_rel = CPUFREQ_RELATION_H;
+					}
+				}
+			}
+		}
+#endif /*                    */
+
 		/*
 		 * Find the lowest frequency where the computed load is less
 		 * than or equal to the target load.
@@ -316,7 +369,7 @@ static unsigned int choose_freq(struct cpufreq_interactive_policyinfo *pcpu,
 
 		if (cpufreq_frequency_table_target(
 			    pcpu->policy, pcpu->freq_table, loadadjfreq / tl,
-			    CPUFREQ_RELATION_L, &index))
+			    freq_rel, &index))
 			break;
 		freq = pcpu->freq_table[index].frequency;
 
@@ -407,6 +460,90 @@ static u64 update_load(int cpu)
 	return now;
 }
 
+#ifdef CONFIG_LGE_PM_CANCUN
+void check_cancun_status(int cpu,u64 now)
+{
+	extern int gpu_power_level;
+	extern int gpu_max_power_level;
+	extern unsigned int gpu_busy_load;
+	unsigned int cpu_online_num;
+	cpu_online_num = num_online_cpus();
+
+	if(cpu != 0 || cancun_gov_en == 0)
+		return;
+
+	/* cannot use in these case*/
+	if(cpu_online_num < 2){
+		if(gpubound_status || compactmode_status){
+			printk("[cancun] recover cancun online_cpu:%d,gpu_max:%d\n",
+					cpu_online_num, gpu_max_power_level);
+		}
+		gpu_idletime = 0;
+		gpu_busytime = 0;
+		gpubound_status = 0;
+		compactmode_status = 0;
+		return ;
+	}
+
+	/* 1. check compact mode status */
+	if(cancun_is_compact && !cancun_compact_disable){
+		if(compactmode_status == 0){
+			printk("[cancun] compact cpu %d tl to %d, compact:%d online:%d\n"
+				,(int)cpu,cancun_gpu_target_load
+				,cancun_is_compact,cpu_online_num);
+		}
+		compactmode_status = 1;
+		return;
+	}
+	else{
+		if(compactmode_status == 1){
+			printk("[cancun] compact recover cancun, compact:%d \n"
+					,cancun_is_compact);
+		}
+		compactmode_status = 0;
+	}
+
+	/* 2. check gpu bound status */
+	if(cancun_is_gpubound){
+		if(gpu_power_level >= cancun_gpu_range_start_freq
+			&& gpu_power_level <=  cancun_gpu_range_end_freq
+			&& gpu_busy_load > cancun_gpubusy_thres){
+			gpu_idletime = 0;
+			if(gpu_busytime == 0){
+				gpu_busytime = now;
+			}
+			if(gpu_busytime > 0
+				&& now - gpu_busytime > cancun_gpu_range_enter_time){
+				if(!gpubound_status){
+					gpubound_status = 1;
+					printk("[cancun] gpubound cpu %d tl to %d, gpu:%d gpu_busy_load:%d\n"
+						,(int)cpu,cancun_gpu_target_load
+						,gpu_power_level,gpu_busy_load);
+				}
+			}
+		}
+		else{
+			if(gpubound_status){
+				if(gpu_idletime == 0){
+					gpu_idletime = now;
+				}
+				if(gpu_idletime > 0
+					&& now - gpu_idletime > cancun_gpu_range_out_time){
+					gpubound_status = 0;
+					gpu_busytime = 0;
+					printk("[cancun] gpubound recover cancun, gpu:%d gpu_busy_load:%d\n"
+						,gpu_power_level,gpu_busy_load);
+				}
+			}
+			else{
+				gpu_busytime = 0;
+				gpu_idletime = 0;
+			}
+		}
+	}
+}
+#endif /*                      */
+
 #define MAX_LOCAL_LOAD 100
 static void cpufreq_interactive_timer(unsigned long data)
 {
@@ -487,6 +624,10 @@ static void cpufreq_interactive_timer(unsigned long data)
 	cpu_load = loadadjfreq / ppol->policy->cur;
 	tunables->boosted = tunables->boost_val || now < tunables->boostpulse_endtime;
 
+#ifdef CONFIG_LGE_PM_CANCUN
+	/*Cancun status check */
+	check_cancun_status((int)data,now);
+#endif
 	if (cpu_load >= tunables->go_hispeed_load || tunables->boosted) {
 		if (ppol->policy->cur < tunables->hispeed_freq &&
 		    cpu_load <= MAX_LOCAL_LOAD) {
@@ -1124,6 +1265,299 @@ static ssize_t store_io_is_busy(struct cpufreq_interactive_tunables *tunables,
 	return count;
 }
 
+#ifdef CONFIG_LGE_PM_CANCUN
+static ssize_t show_cancun_gov_enable(
+		struct cpufreq_interactive_tunables	*tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gov_en);
+}
+
+static ssize_t store_cancun_gov_enable(
+		struct cpufreq_interactive_tunables	*tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	cancun_gov_en = val;
+	gpu_busytime = 0ULL;
+	gpu_idletime = 0ULL;
+	gpubound_status = 0;
+	compactmode_status = 0;
+
+	printk("[cancun] cancun governor enable or disable : %ld\n",val);
+
+	return count;
+}
+
+static ssize_t show_is_cancun_activated(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	if(gpubound_status)
+		return sprintf(buf, "1\n");
+	else
+		return sprintf(buf, "0\n");
+}
+
+
+static ssize_t show_cancun_is_compact(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_is_compact);
+}
+
+static ssize_t store_cancun_is_compact(
+		struct cpufreq_interactive_tunables	*tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long int val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	compactmode_status = 0;
+	cancun_is_compact = val;
+	printk("[cancun] compactmode check : %ld\n",val);
+
+	return count;
+}
+
+static ssize_t show_cancun_is_gpubound(
+		struct cpufreq_interactive_tunables	*tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_is_gpubound);
+}
+
+static ssize_t store_cancun_is_gpubound(
+		struct cpufreq_interactive_tunables	*tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	gpu_busytime = 0ULL;
+	gpu_idletime = 0ULL;
+	gpubound_status = 0;
+	cancun_is_gpubound = val;
+	printk("[cancun] gpu bound check : %ld\n",val);
+
+	return count;
+}
+
+static ssize_t show_cancun_compact_target_load(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n",cancun_compact_target_load);
+}
+
+static ssize_t store_cancun_compact_target_load(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_compact_target_load = val;
+	return count;
+}
+
+
+static ssize_t show_cancun_gpu_target_load(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpu_target_load);
+}
+static ssize_t store_cancun_gpu_target_load(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpu_target_load = val;
+	return count;
+}
+
+static ssize_t show_cancun_gpubusy_thres(
+		struct cpufreq_interactive_tunables *tunables,char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpubusy_thres);
+}
+
+static ssize_t store_cancun_gpubusy_thres(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpubusy_thres = val;
+	return count;
+}
+
+
+static ssize_t show_cancun_gpu_range_start_freq(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpu_range_start_freq);
+}
+
+static ssize_t store_cancun_gpu_range_start_freq(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpu_range_start_freq = val;
+	return count;
+}
+
+static ssize_t show_cancun_gpu_range_end_freq(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpu_range_end_freq);
+}
+
+static ssize_t store_cancun_gpu_range_end_freq(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpu_range_end_freq = val;
+	return count;
+}
+
+static ssize_t show_cancun_gpu_range_enter_time(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpu_range_enter_time);
+}
+
+static ssize_t store_cancun_gpu_range_enter_time(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpu_range_enter_time = val;
+	return count;
+}
+
+static ssize_t show_cancun_gpu_range_out_time(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_gpu_range_out_time);
+}
+
+static ssize_t store_cancun_gpu_range_out_time(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_gpu_range_out_time = val;
+	return count;
+}
+
+static ssize_t show_cancun_compact_opt_little_freq(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_compact_opt_little_freq);
+}
+
+static ssize_t store_cancun_compact_opt_little_freq(
+		struct cpufreq_interactive_tunables *tunables, const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_compact_opt_little_freq = val;
+	return count;
+}
+
+static ssize_t show_cancun_compact_opt_big_freq(
+		struct cpufreq_interactive_tunables *tunables, char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_compact_opt_big_freq);
+}
+
+static ssize_t store_cancun_compact_opt_big_freq(
+		struct cpufreq_interactive_tunables *tunables,const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_compact_opt_big_freq = val;
+	return count;
+}
+
+static ssize_t show_cancun_compact_disable(
+		struct cpufreq_interactive_tunables *tunables,char *buf)
+{
+	return sprintf(buf, "%u\n", cancun_compact_disable);
+}
+
+static ssize_t store_cancun_compact_disable(
+		struct cpufreq_interactive_tunables *tunables,const char *buf,
+		size_t count)
+{
+	int ret;
+	unsigned long int val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	cancun_compact_disable = val;
+	printk("[cancun] compactmode check disable : %ld\n",val);
+
+	return count;
+}
+#endif /*                      */
+
+
 static int cpufreq_interactive_enable_sched_input(
 			struct cpufreq_interactive_tunables *tunables)
 {
@@ -1316,6 +1750,22 @@ show_store_gov_pol_sys(use_sched_load);
 show_store_gov_pol_sys(use_migration_notif);
 show_store_gov_pol_sys(max_freq_hysteresis);
 show_store_gov_pol_sys(align_windows);
+#ifdef CONFIG_LGE_PM_CANCUN
+show_store_gov_pol_sys(cancun_gov_enable);
+show_gov_pol_sys(is_cancun_activated);
+show_store_gov_pol_sys(cancun_is_compact);
+show_store_gov_pol_sys(cancun_is_gpubound);
+show_store_gov_pol_sys(cancun_compact_target_load);
+show_store_gov_pol_sys(cancun_gpu_target_load);
+show_store_gov_pol_sys(cancun_gpubusy_thres);
+show_store_gov_pol_sys(cancun_gpu_range_start_freq);
+show_store_gov_pol_sys(cancun_gpu_range_end_freq);
+show_store_gov_pol_sys(cancun_gpu_range_enter_time);
+show_store_gov_pol_sys(cancun_gpu_range_out_time);
+show_store_gov_pol_sys(cancun_compact_opt_little_freq);
+show_store_gov_pol_sys(cancun_compact_opt_big_freq);
+show_store_gov_pol_sys(cancun_compact_disable);
+#endif /*                      */
 
 #define gov_sys_attr_rw(_name)						\
 static struct global_attr _name##_gov_sys =				\
@@ -1343,12 +1793,35 @@ gov_sys_pol_attr_rw(use_sched_load);
 gov_sys_pol_attr_rw(use_migration_notif);
 gov_sys_pol_attr_rw(max_freq_hysteresis);
 gov_sys_pol_attr_rw(align_windows);
+#ifdef CONFIG_LGE_PM_CANCUN
+gov_sys_pol_attr_rw(cancun_gov_enable);
+gov_sys_pol_attr_rw(cancun_is_compact);
+gov_sys_pol_attr_rw(cancun_is_gpubound);
+gov_sys_pol_attr_rw(cancun_compact_target_load);
+gov_sys_pol_attr_rw(cancun_gpu_target_load);
+gov_sys_pol_attr_rw(cancun_gpubusy_thres);
+gov_sys_pol_attr_rw(cancun_gpu_range_start_freq);
+gov_sys_pol_attr_rw(cancun_gpu_range_end_freq);
+gov_sys_pol_attr_rw(cancun_gpu_range_enter_time);
+gov_sys_pol_attr_rw(cancun_gpu_range_out_time);
+gov_sys_pol_attr_rw(cancun_compact_opt_little_freq);
+gov_sys_pol_attr_rw(cancun_compact_opt_big_freq);
+gov_sys_pol_attr_rw(cancun_compact_disable);
+#endif /*                    */
 
 static struct global_attr boostpulse_gov_sys =
 	__ATTR(boostpulse, 0200, NULL, store_boostpulse_gov_sys);
 
 static struct freq_attr boostpulse_gov_pol =
 	__ATTR(boostpulse, 0200, NULL, store_boostpulse_gov_pol);
+
+#ifdef CONFIG_LGE_PM_CANCUN
+static struct global_attr is_cancun_activated_gov_sys =
+	__ATTR(is_cancun_activated, 0444, show_is_cancun_activated_gov_sys, NULL);
+
+static struct freq_attr is_cancun_activated_gov_pol =
+	__ATTR(is_cancun_activated, 0444, show_is_cancun_activated_gov_pol, NULL);
+#endif
 
 /* One Governor instance for entire system */
 static struct attribute *interactive_attributes_gov_sys[] = {
@@ -1367,6 +1840,22 @@ static struct attribute *interactive_attributes_gov_sys[] = {
 	&use_migration_notif_gov_sys.attr,
 	&max_freq_hysteresis_gov_sys.attr,
 	&align_windows_gov_sys.attr,
+#ifdef CONFIG_LGE_PM_CANCUN
+	&cancun_gov_enable_gov_sys.attr,
+	&is_cancun_activated_gov_sys.attr,
+	&cancun_is_compact_gov_sys.attr,
+	&cancun_is_gpubound_gov_sys.attr,
+	&cancun_compact_target_load_gov_sys.attr,
+	&cancun_gpu_target_load_gov_sys.attr,
+	&cancun_gpubusy_thres_gov_sys.attr,
+	&cancun_gpu_range_start_freq_gov_sys.attr,
+	&cancun_gpu_range_end_freq_gov_sys.attr,
+	&cancun_gpu_range_enter_time_gov_sys.attr,
+	&cancun_gpu_range_out_time_gov_sys.attr,
+	&cancun_compact_opt_little_freq_gov_sys.attr,
+	&cancun_compact_opt_big_freq_gov_sys.attr,
+	&cancun_compact_disable_gov_sys.attr,
+#endif /*                    */
 	NULL,
 };
 
@@ -1392,6 +1881,22 @@ static struct attribute *interactive_attributes_gov_pol[] = {
 	&use_migration_notif_gov_pol.attr,
 	&max_freq_hysteresis_gov_pol.attr,
 	&align_windows_gov_pol.attr,
+#ifdef CONFIG_LGE_PM_CANCUN
+	&cancun_gov_enable_gov_pol.attr,
+	&is_cancun_activated_gov_pol.attr,
+	&cancun_is_compact_gov_pol.attr,
+	&cancun_is_gpubound_gov_pol.attr,
+	&cancun_compact_target_load_gov_pol.attr,
+	&cancun_gpu_target_load_gov_pol.attr,
+	&cancun_gpubusy_thres_gov_pol.attr,
+	&cancun_gpu_range_start_freq_gov_pol.attr,
+	&cancun_gpu_range_end_freq_gov_pol.attr,
+	&cancun_gpu_range_enter_time_gov_pol.attr,
+	&cancun_gpu_range_out_time_gov_pol.attr,
+	&cancun_compact_opt_little_freq_gov_pol.attr,
+	&cancun_compact_opt_big_freq_gov_pol.attr,
+	&cancun_compact_disable_gov_pol.attr,
+#endif /*                    */
 	NULL,
 };
 

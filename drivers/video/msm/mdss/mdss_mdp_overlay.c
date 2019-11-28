@@ -26,6 +26,7 @@
 #include <linux/memblock.h>
 #include <linux/sort.h>
 #include <linux/sw_sync.h>
+#include <linux/mdss_io_util.h>
 
 #include <linux/msm_iommu_domains.h>
 #include <soc/qcom/event_timer.h>
@@ -2654,6 +2655,11 @@ static ssize_t dynamic_fps_sysfs_wta_dfps(struct device *dev,
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
 	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
 
+// if auto adjust screen tone is on,skip qualcomm dfps command
+#if defined(CONFIG_Z2_LGD_POLED_PANEL)
+	if(get_plc_status())
+		return 0;
+#endif
 	rc = kstrtoint(buf, 10, &dfps);
 	if (rc) {
 		pr_err("%s: kstrtoint failed. rc=%d\n", __func__, rc);
@@ -5108,7 +5114,6 @@ int mdss_mdp_overlay_init(struct msm_fb_data_type *mfd)
 	mfd->wait_for_kickoff = true;
 	if (is_panel_split(mfd) && mdp5_data->mdata->has_pingpong_split)
 		mfd->split_mode = MDP_PINGPONG_SPLIT;
-
 	if (mfd->panel_info->partial_update_enabled)
 		mdp5_data->mdata->pp_enable = MDP_PP_DISABLE;
 	else

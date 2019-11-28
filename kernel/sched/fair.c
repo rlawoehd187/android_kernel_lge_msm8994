@@ -1352,6 +1352,13 @@ static int __read_mostly sched_upmigrate_min_nice = 15;
 int __read_mostly sysctl_sched_upmigrate_min_nice = 15;
 
 /*
+ * Tunable to govern scheduler wakeup placement CPU selection
+ * preference. If set, the scheduler chooses to wake up a task
+ * on an idle CPU.
+ */
+unsigned int __read_mostly sysctl_sched_prefer_idle = 1;
+
+/*
  * Scheduler boost is a mechanism to temporarily place tasks on CPUs
  * with higher capacity than those where a task would have normally
  * ended up with their load characteristics. Any entity enabling

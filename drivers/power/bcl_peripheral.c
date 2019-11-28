@@ -415,7 +415,7 @@ static int bcl_read_vbat_low_trip(int *thresh_value)
 	} else {
 		*thresh_value = (int)val;
 		convert_adc_to_vbat_val(thresh_value);
-		pr_debug("Reading Ibat high trip:%d. ADC_val:%d\n",
+		pr_debug("Reading Vbat low trip:%d. ADC_val:%d\n",
 				*thresh_value, val);
 	}
 
@@ -521,6 +521,7 @@ static int bcl_read_ibat(int *adc_value)
 		}
 	} while (val[VAL_REG_BUF_OFFSET] != val[VAL_CP_REG_BUF_OFFSET]
 		&& timeout++ < BCL_READ_RETRY_LIMIT);
+
 	if (val[VAL_REG_BUF_OFFSET] != val[VAL_CP_REG_BUF_OFFSET]) {
 		ret = -ENODEV;
 		goto bcl_read_exit;
@@ -589,6 +590,13 @@ static void bcl_poll_ibat_low(struct work_struct *work)
 		perph_data->state = BCL_PARAM_MONITOR;
 		enable_irq(perph_data->irq_num);
 	} else {
+#ifndef CONFIG_LGE_PM
+		ret = perph_data->clear_max();
+		if (ret) {
+			pr_debug("Error in clearing ibat max. err:%d", ret);
+			goto reschedule_ibat;
+		}
+#endif
 		goto reschedule_ibat;
 	}
 
@@ -630,6 +638,13 @@ static void bcl_poll_vbat_high(struct work_struct *work)
 		perph_data->state = BCL_PARAM_MONITOR;
 		enable_irq(perph_data->irq_num);
 	} else {
+#ifndef CONFIG_LGE_PM
+		ret = perph_data->clear_max();
+		if (ret) {
+			pr_debug("Error in clearing vbat max. err:%d", ret);
+			goto reschedule_vbat;
+		}
+#endif
 		goto reschedule_vbat;
 	}
 
