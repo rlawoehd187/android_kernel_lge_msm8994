@@ -3331,7 +3331,7 @@ printk(KERN_DEBUG "[LGE_DATA][%s()] The RA msg had been received!", __func__);
 		goto out;
     }
 //                                                                                                            
-	if (ifp->probes++ < idev->cnf.rtr_solicits || idev->cnf.rtr_solicits < 0) {
+	if (idev->rs_probes++ < idev->cnf.rtr_solicits || idev->cnf.rtr_solicits < 0) {
 		if (!__ipv6_get_lladdr(idev, &lladdr, IFA_F_TENTATIVE))
 			ndisc_send_rs(idev->dev, &lladdr,
 				      &in6addr_linklocal_allrouters);
