@@ -1282,12 +1282,12 @@ long diagchar_compat_ioctl(struct file *filp,
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
 		mutex_unlock(&driver->dci_mutex);
 		break;
@@ -1295,7 +1295,7 @@ long diagchar_compat_ioctl(struct file *filp,
 		result = diag_ioctl_dci_event_status(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
 			sizeof(int))) {
 			mutex_unlock(&driver->dci_mutex);
@@ -1332,7 +1332,7 @@ long diagchar_compat_ioctl(struct file *filp,
 			result = 1;
 		break;
 	case DIAG_IOCTL_VOTE_REAL_TIME:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
 		mutex_unlock(&driver->dci_mutex);
 		break;
@@ -1399,12 +1399,12 @@ long diagchar_ioctl(struct file *filp,
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
 		mutex_unlock(&driver->dci_mutex);
 		break;
@@ -1414,7 +1414,7 @@ long diagchar_ioctl(struct file *filp,
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
 			sizeof(int))) {
 			mutex_unlock(&driver->dci_mutex);
@@ -1424,7 +1424,7 @@ long diagchar_ioctl(struct file *filp,
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_EVENTS:
-		mutex_unlock(&driver->dci_mutex);
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user(&client_id, (void __user *)ioarg,
 			sizeof(int))) {
 			mutex_unlock(&driver->dci_mutex);
@@ -1453,7 +1453,7 @@ long diagchar_ioctl(struct file *filp,
 	case DIAG_IOCTL_VOTE_REAL_TIME:
 		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
-		mutex_lock(&driver->dci_mutex);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_GET_REAL_TIME:
 		result = diag_ioctl_get_real_time(ioarg);
