@@ -96,9 +96,6 @@ ifeq ($(INIT_BOOTCHART2), true)
 KERNEL_CONFIG_OVERRIDE_FILES += bootchart2_defconfig
 endif
 
-KERNEL_BUILD_STAMP := $(KERNEL_OUT)/.build_stamp
-
-$(KERNEL_OUT):
 	mkdir -p $(KERNEL_OUT)
 
 $(KERNEL_CONFIG): $(KERNEL_OUT)
@@ -113,10 +110,16 @@ $(KERNEL_CONFIG): $(KERNEL_OUT)
       do cat kernel/arch/${KERNEL_ARCH}/configs/$$override_file >> $(KERNEL_OUT)/.config; done; \
 			$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) olddefconfig; fi
 
-$(KERNEL_HEADERS_INSTALL) $(TARGET_PREBUILT_INT_KERNEL): $(KERNEL_BUILD_STAMP)
-
-$(KERNEL_BUILD_STAMP): $(KERNEL_OUT) $(KERNEL_SRC_DIR)/
+$(TARGET_PREBUILT_INT_KERNEL): $(KERNEL_OUT) $(KERNEL_HEADERS_INSTALL)
 	$(hide) echo "Building kernel..."
+	$(hide) rm -rf $(KERNEL_OUT)/arch/$(KERNEL_ARCH)/boot/dts
+	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) $(KERNEL_CFLAGS)
+	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) $(KERNEL_CFLAGS) modules
+	$(MAKE) -C kernel O=../$(KERNEL_OUT) INSTALL_MOD_PATH=../../$(KERNEL_MODULES_INSTALL) INSTALL_MOD_STRIP=1 ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) modules_install
+	$(mv-modules)
+	$(clean-module-folder)
+
+$(KERNEL_HEADERS_INSTALL): $(KERNEL_OUT)
 	$(hide) if [ ! -z "$(KERNEL_HEADER_DEFCONFIG)" ]; then \
 			$(hide) rm -f ../$(KERNEL_CONFIG); \
 			$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_HEADER_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) $(KERNEL_HEADER_DEFCONFIG); \
@@ -135,10 +138,6 @@ $(KERNEL_BUILD_STAMP): $(KERNEL_OUT) $(KERNEL_SRC_DIR)/
         do cat kernel/arch/${KERNEL_ARCH}/configs/$$override_file >> $(KERNEL_OUT)/.config; done; \
 	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) olddefconfig; fi
 
-	$(hide) rm -rf $(KERNEL_OUT)/arch/$(KERNEL_ARCH)/boot/dts
-	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) $(KERNEL_CFLAGS)
-	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) $(KERNEL_CFLAGS) modules
-	$(MAKE) -C kernel O=../$(KERNEL_OUT) INSTALL_MOD_PATH=../../$(KERNEL_MODULES_INSTALL) INSTALL_MOD_STRIP=1 ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) modules_install
 ifeq ($(PRODUCT_SUPPORT_EXFAT), y)
 	@cp -f $(ANDROID_BUILD_TOP)/kernel/tuxera_update.sh $(ANDROID_BUILD_TOP)
 	@sh tuxera_update.sh --target target/lg.d/mobile-msm8994-arm64-4.9-3.10.84 --use-cache --latest --max-cache-entries 2 --source-dir $(ANDROID_BUILD_TOP)/kernel --output-dir $(ANDROID_BUILD_TOP)/$(KERNEL_OUT) -a --user lg-mobile --pass AumlTsj0ou
@@ -185,10 +184,6 @@ else
 	$(ANDROID_BUILD_TOP)/$(KERNEL_MODULES_OUT)/itson_module2.ko
 endif
 endif
-	$(mv-modules)
-	$(clean-module-folder)
-	$(hide) touch $(KERNEL_HEADERS_INSTALL) $(TARGET_PREBUILT_INT_KERNEL) $(KERNEL_BUILD_STAMP)
-
 kerneltags: $(KERNEL_OUT) $(KERNEL_CONFIG)
 	$(MAKE) -C kernel O=../$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) CROSS_COMPILE=$(KERNEL_CROSS_COMPILE) tags
 
