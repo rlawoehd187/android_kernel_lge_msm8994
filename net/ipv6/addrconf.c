@@ -3575,7 +3575,7 @@ static void addrconf_dad_work(struct work_struct *w)
 	printk(KERN_DEBUG "[LGE_DATA][%s()] CopyInterfaceName == %s, CurrentInterfaceName == %s", __func__, InterfaceNameToApply, CurrentInterfaceName);    
 
     if(strcmp(InterfaceNameToApply, CurrentInterfaceName) == 0){//In case of rmnet, this patch will be applied bacause We should not impact to the Wi-Fi and so on.
-	    addrconf_mod_timer(ifp, AC_DAD, LGE_DATA_WAITING_TIME_FOR_DAD_OF_LGU);
+	    addrconf_mod_dad_work(ifp, LGE_DATA_WAITING_TIME_FOR_DAD_OF_LGU);
         printk(KERN_DEBUG "[LGE_DATA][%s()] The waiting time for link-local DAD is set as [%d] milli-seconds in case of only rmnet interface !", __func__, LGE_DATA_WAITING_TIME_FOR_DAD_OF_LGU*10);
     }else{
 //kernel original code -- START
