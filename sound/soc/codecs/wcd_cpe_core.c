@@ -2987,12 +2987,7 @@ static int wcd_cpe_dealloc_lsm_session(void *core_handle,
 		wcd_cpe_deinitialize_afe_port_data();
 	}
 
-	rc = cpe_svc_toggle_lab(core->cpe_handle, true);
-	if (rc)
-		dev_err(core->dev,
-			"%s: lab enable failed, err = %d\n",
-			__func__, rc);
-	return rc;
+	return ret;
 }
 
 static int slim_master_read_enable(void *core_handle,
