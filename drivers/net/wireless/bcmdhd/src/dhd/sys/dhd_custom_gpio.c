@@ -1,6 +1,6 @@
 /*
 * Customer code to add GPIO control during WLAN start/stop
-* Copyright (C) 1999-2015, Broadcom Corporation
+* Copyright (C) 1999-2017, Broadcom Corporation
 * 
 *      Unless you and Broadcom execute a separate written software license
 * agreement governing use of this software, this software is licensed to you
@@ -32,8 +32,9 @@
 #include <dhd_linux.h>
 
 #include <wlioctl.h>
+#if defined(WL_WIRELESS_EXT)
 #include <wl_iw.h>
-
+#endif /* WL_WIRELESS_EXT */
 #define WL_ERROR(x) printf x
 #define WL_TRACE(x)
 
@@ -324,7 +325,8 @@ const struct cntry_locales_custom translate_custom_table[] = {
 *  input : ISO 3166-1 country abbreviation
 *  output: customized cspec
 */
-void get_customized_country_code(void *adapter, char *country_iso_code, wl_country_t *cspec)
+void get_customized_country_code(void *adapter, char *country_iso_code,
+				 wl_country_t *cspec, u32 flags)
 {
 	int size, i;
 

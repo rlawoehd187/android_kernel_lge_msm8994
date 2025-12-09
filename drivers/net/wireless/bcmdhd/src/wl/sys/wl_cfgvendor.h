@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 Vendor Extension Code
  *
- * Copyright (C) 1999-2015, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -151,6 +151,7 @@ enum gscan_attributes {
 	GSCAN_ATTRIBUTE_RSSI_HIGH,
 	GSCAN_ATTRIBUTE_HOSTLIST_BSSID_ELEM,
 	GSCAN_ATTRIBUTE_HOTLIST_FLUSH,
+	GSCAN_ATTRIBUTE_HOTLIST_BSSID_COUNT,
 
 	/* remaining reserved for additional attributes */
 	GSCAN_ATTRIBUTE_RSSI_SAMPLE_SIZE = 60,

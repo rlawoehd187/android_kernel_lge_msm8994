@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 driver - Android related functions
  *
- * Copyright (C) 1999-2015, Broadcom Corporation
+ * Copyright (C) 1999-2017, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: wl_android.c 556417 2015-05-13 11:46:42Z $
+ * $Id: wl_android.c 684926 2017-02-15 02:00:38Z $
  */
 
 #include <linux/module.h>
@@ -263,6 +263,10 @@ typedef struct android_wifi_af_params {
 #define WL_ANDROID_LINK_MIMO					0x02
 #define WL_ANDROID_LINK_AP_VHT_SUPPORT		0x04
 #define WL_ANDROID_LINK_AP_MIMO_SUPPORT	0x08
+
+#if (defined(CUSTOMER_HW10) && defined(MANUAL_ALL_MCAST_PKTS))
+#define CMD_SETALLMULTI	"SETALLMULTI"
+#endif
 
 /* miracast related definition */
 #define MIRACAST_MODE_OFF	0
@@ -533,11 +537,19 @@ static int wl_android_get_rssi(struct net_device *net, char *command, int total_
 		return -1;
 	if ((ssid.SSID_len == 0) || (ssid.SSID_len > DOT11_MAX_SSID_LEN)) {
 		DHD_ERROR(("%s: wldev_get_ssid failed\n", __FUNCTION__));
+	} else if (total_len <= ssid.SSID_len) {
+		return -ENOMEM;
 	} else {
 		memcpy(command, ssid.SSID, ssid.SSID_len);
 		bytes_written = ssid.SSID_len;
 	}
-	bytes_written += snprintf(&command[bytes_written], total_len, " rssi %d", rssi);
+	if ((total_len - bytes_written) < (strlen(" rssi -XXX") + 1))
+		return -ENOMEM;
+
+	bytes_written += scnprintf(&command[bytes_written], total_len - bytes_written,
+		" rssi %d", rssi);
+	command[bytes_written] = '\0';
+
 	DHD_INFO(("%s: command result is %s (%d)\n", __FUNCTION__, command, bytes_written));
 	return bytes_written;
 }
@@ -1381,6 +1393,28 @@ int wl_android_set_okc_mode(struct net_device *dev, char *command, int total_len
 #endif /* WES_SUPPORT */
 #endif /* CUSTOMER_HW4 */
 
+#if (defined(CUSTOMER_HW10) && defined(MANUAL_ALL_MCAST_PKTS))
+int wl_android_set_allmulti(struct net_device *dev, char *command, int total_len)
+{
+	int error = 0;
+	int mode = 0;
+
+	if (sscanf(command, "%*s %d", &mode) != 1) {
+		DHD_ERROR(("%s: Failed to get Parameter\n", __FUNCTION__));
+		return -1;
+	}
+
+	error = wldev_iovar_setint(dev, "allmulti", mode);
+	if (error) {
+		DHD_ERROR(("%s: Failed to set allmulti %d, error = %d\n",
+		__FUNCTION__, mode, error));
+		return -1;
+	}
+
+	return error;
+}
+#endif
+
 #ifdef CHANGE_PASSIVE_SCAN_TIME
 int wl_android_get_passive_scan_channel_time(struct net_device *dev, char *command, int total_len)
 {
@@ -1490,6 +1524,13 @@ wls_parse_batching_cmd(struct net_device *dev, char *command, int total_len)
 						DHD_PNO(("band : %s\n",
 							(*token2 == 'A')? "A" : "B"));
 					} else {
+						if ((batch_params.nchan >= WL_NUMCHANNELS) ||
+						    (i >= WL_NUMCHANNELS)) {
+						    DHD_ERROR(("Too many nchan %d\n",
+						           batch_params.nchan));
+						    err = BCME_BUFTOOSHORT;
+						    goto exit;
+						}
 						batch_params.chan_list[i++] =
 						simple_strtol(token2, NULL, 0);
 						batch_params.nchan++;
@@ -1592,7 +1633,7 @@ static int wl_android_set_pno_setup(struct net_device *dev, char *command, int t
 		str_ptr += sizeof(cmd_tlv_t);
 		tlv_size_left -= sizeof(cmd_tlv_t);
 
-		if ((nssid = wl_iw_parse_ssid_list_tlv(&str_ptr, ssids_local,
+		if ((nssid = wl_parse_ssid_list_tlv(&str_ptr, ssids_local,
 			MAX_PFN_LIST_COUNT, &tlv_size_left)) <= 0) {
 			DHD_ERROR(("SSID is not presented or corrupted ret=%d\n", nssid));
 			goto exit_proc;
@@ -2728,8 +2769,8 @@ wl_android_set_roampref(struct net_device *dev, char *command, int total_len)
 	uint8 buf[MAX_BUF_SIZE];
 	uint8 *pref = buf;
 	char *pcmd;
-	int num_ucipher_suites = 0;
-	int num_akm_suites = 0;
+	uint num_ucipher_suites;
+	uint num_akm_suites;
 	wpa_suite_t ucipher_suites[MAX_NUM_SUITES];
 	wpa_suite_t akm_suites[MAX_NUM_SUITES];
 	int num_tuples = 0;
@@ -2742,6 +2783,10 @@ wl_android_set_roampref(struct net_device *dev, char *command, int total_len)
 	total_len_left = total_len - strlen(CMD_SET_ROAMPREF) + 1;
 
 	num_akm_suites = simple_strtoul(pcmd, NULL, 16);
+	if (num_akm_suites > MAX_NUM_SUITES) {
+		DHD_ERROR(("too many AKM suits = %d.\n", num_akm_suites));
+		return BCME_ERROR;
+	}
 	/* Increment for number of AKM suites field + space */
 	pcmd += 3;
 	total_len_left -= 3;
@@ -2767,6 +2812,10 @@ wl_android_set_roampref(struct net_device *dev, char *command, int total_len)
 
 	total_len_left -= (num_akm_suites * WIDTH_AKM_SUITE);
 	num_ucipher_suites = simple_strtoul(pcmd, NULL, 16);
+	if (num_ucipher_suites > MAX_NUM_SUITES) {
+		DHD_ERROR(("too many cipher suits = %d.\n", num_ucipher_suites));
+		return BCME_ERROR;
+	}
 	/* Increment for number of cipher suites field + space */
 	pcmd += 3;
 	total_len_left -= 3;
@@ -3512,12 +3561,19 @@ int wl_android_set_lps(struct net_device *dev, const char *cmd)
 int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 {
 #define PRIVATE_COMMAND_MAX_LEN	8192
+#define PRIVATE_COMMAND_DEF_LEN	4096
 	int ret = 0;
 	char *command = NULL;
 	int bytes_written = 0;
 	android_wifi_priv_cmd priv_cmd;
+	int buf_size = 0;
 
 	net_os_wake_lock(net);
+
+	if (!capable(CAP_NET_ADMIN)) {
+		ret = -EPERM;
+		goto exit;
+	}
 
 	if (!ifr->ifr_data) {
 		ret = -EINVAL;
@@ -3545,11 +3601,15 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 		}
 	}
 	if ((priv_cmd.total_len > PRIVATE_COMMAND_MAX_LEN) || (priv_cmd.total_len < 0)) {
-		DHD_ERROR(("%s: too long priavte command\n", __FUNCTION__));
+		DHD_ERROR(("%s: buf length invalid:%d\n", __FUNCTION__,
+			priv_cmd.total_len));
 		ret = -EINVAL;
 		goto exit;
 	}
-	command = kmalloc((priv_cmd.total_len + 1), GFP_KERNEL);
+
+	buf_size = max(priv_cmd.total_len, PRIVATE_COMMAND_DEF_LEN);
+	command = kmalloc((buf_size + 1), GFP_KERNEL);
+
 	if (!command)
 	{
 		DHD_ERROR(("%s: failed to allocate memory\n", __FUNCTION__));
@@ -3676,7 +3736,7 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 	/* CUSTOMER_SET_COUNTRY feature is define for only GGSM model */
 	else if (strnicmp(command, CMD_COUNTRY, strlen(CMD_COUNTRY)) == 0) {
 		char *country_code = command + strlen(CMD_COUNTRY) + 1;
-		bytes_written = wldev_set_country(net, country_code, true, true);
+		bytes_written = wldev_set_country(net, country_code, true, false);
 	}
 #endif /* CUSTOMER_SET_COUNTRY */
 #endif /* WL_CFG80211 */
@@ -3799,6 +3859,11 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 	}
 #endif /* WES_SUPPORT */
 #endif /* CUSTOMER_HW4 */
+#if (defined(CUSTOMER_HW10) && defined(MANUAL_ALL_MCAST_PKTS))
+	else if (strnicmp(command, CMD_SETALLMULTI, strlen(CMD_SETALLMULTI)) == 0) {
+		bytes_written = wl_android_set_allmulti(net, command, priv_cmd.total_len);
+	}
+#endif
 
 #ifdef CHANGE_PASSIVE_SCAN_TIME
         else if (strnicmp(command, CMD_GETPASSIVESCANTIME, strlen(CMD_GETPASSIVESCANTIME)) == 0) {
@@ -4064,19 +4129,19 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 #endif /* WLWFDS */
 	else {
 		DHD_ERROR(("Unknown PRIVATE command %s - ignored\n", command));
-		snprintf(command, 3, "OK");
-		bytes_written = strlen("OK");
+		bytes_written = scnprintf(command, sizeof("FAIL"), "FAIL");
 	}
 
 	if (bytes_written >= 0) {
 		if ((bytes_written == 0) && (priv_cmd.total_len > 0))
 			command[0] = '\0';
 		if (bytes_written >= priv_cmd.total_len) {
-			DHD_ERROR(("%s: bytes_written = %d\n", __FUNCTION__, bytes_written));
-			bytes_written = priv_cmd.total_len;
-		} else {
-			bytes_written++;
+			DHD_ERROR(("%s: err. bytes_written:%d >= buf_size:%d \n",
+				__FUNCTION__, bytes_written, buf_size));
+			ret = BCME_BUFTOOSHORT;
+			goto exit;
 		}
+		bytes_written++;
 		priv_cmd.used_len = bytes_written;
 		if (copy_to_user(priv_cmd.buf, command, bytes_written)) {
 			DHD_ERROR(("%s: failed to copy data to user buffer\n", __FUNCTION__));
@@ -4089,10 +4154,7 @@ int wl_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 
 exit:
 	net_os_wake_unlock(net);
-	if (command) {
-		kfree(command);
-	}
-
+	kfree(command);
 	return ret;
 }
 

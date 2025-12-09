@@ -1,7 +1,7 @@
 /*
  * DHD Bus Module for SDIO
  *
- * Copyright (C) 1999-2015, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -295,7 +295,9 @@ typedef struct dhd_bus {
 	int32		sd_rxchain;		/* If bcmsdh api accepts PKT chains */
 	bool		use_rxchain;		/* If dhd should use PKT chains */
 	bool		sleeping;		/* Is SDIO bus sleeping? */
+#if defined(SUPPORT_P2P_GO_PS)
 	wait_queue_head_t bus_sleep;
+#endif /* LINUX && SUPPORT_P2P_GO_PS */
 	uint		rxflow_mode;		/* Rx flow control mode */
 	bool		rxflow;			/* Is rx flow control on */
 	uint		prev_rxlim_hit;		/* Is prev rx limit exceeded (per dpc schedule) */
@@ -1538,7 +1540,9 @@ dhdsdio_bussleep(dhd_bus_t *bus, bool sleep)
 
 		/* Change state */
 		bus->sleeping = TRUE;
+#if defined(SUPPORT_P2P_GO_PS)
 		wake_up(&bus->bus_sleep);
+#endif /* LINUX && SUPPORT_P2P_GO_PS */
 	} else {
 		/* Waking up: bus power up is ok, set local state */
 
@@ -6324,10 +6328,8 @@ clkwait:
 		txlimit -= framecnt;
 	}
 	/* Resched the DPC if ctrl cmd is pending on bus credit */
-	if (bus->ctrl_frame_stat) {
-            msleep(50);
-            resched = TRUE;
-        }
+	if (bus->ctrl_frame_stat)
+		resched = TRUE;
 
 	/* Resched if events or tx frames are pending, else await next interrupt */
 	/* On failed register access, all bets are off: no resched or interrupts */
@@ -6372,7 +6374,7 @@ exit:
 	dhd_os_sdunlock(bus->dhd);
 #if defined(CUSTOMER_HW4)
 	if (bus->dhd->dhd_bug_on) {
-		DHD_INFO(("%s: resched = %d ctrl_frame_stat = %d intstatus 0x%08x"
+		DHD_ERROR(("%s: resched = %d ctrl_frame_stat = %d intstatus 0x%08x"
 			" ipend = %d pktq_mlen = %d is_resched_by_readframe = %d \n",
 			__FUNCTION__, resched, bus->ctrl_frame_stat,
 			bus->intstatus, bus->ipend,
@@ -6807,6 +6809,7 @@ extern bool
 dhd_bus_watchdog(dhd_pub_t *dhdp)
 {
 	dhd_bus_t *bus;
+	bool ret = FALSE;
 
 	DHD_TIMER(("%s: Enter\n", __FUNCTION__));
 
@@ -6820,14 +6823,18 @@ dhd_bus_watchdog(dhd_pub_t *dhdp)
 		return FALSE;
 	}
 
+	dhd_os_sdlock(bus->dhd);
+
 	/* Ignore the timer if simulating bus down */
 	if (!SLPAUTO_ENAB(bus) && bus->sleeping)
-		return FALSE;
+		goto wd_end;
 
 	if (dhdp->busstate == DHD_BUS_DOWN)
-		return FALSE;
+		goto wd_end;
 
-	dhd_os_sdlock(bus->dhd);
+	if (!dhdp->up)
+		goto wd_end;
+ 	ret = TRUE;
 
 	/* Poll period: check device if appropriate. */
 	if (!SLPAUTO_ENAB(bus) && (bus->poll && (++bus->polltick >= bus->pollrate))) {
@@ -6938,9 +6945,10 @@ dhd_bus_watchdog(dhd_pub_t *dhdp)
 	}
 #endif /* DHD_USE_IDLECOUNT */
 
+wd_end:
 	dhd_os_sdunlock(bus->dhd);
 
-	return bus->ipend;
+	return (ret ? bus->ipend : FALSE);
 }
 
 #ifdef DHD_DEBUG
@@ -7218,6 +7226,10 @@ dhdsdio_probe(uint16 venid, uint16 devid, uint16 bus_no, uint16 slot,
 	bus->tx_seq = SDPCM_SEQUENCE_WRAP - 1;
 	bus->usebufpool = FALSE; /* Use bufpool if allocated, else use locally malloced rxbuf */
 
+#if defined(SUPPORT_P2P_GO_PS)
+	init_waitqueue_head(&bus->bus_sleep);
+#endif /* LINUX && SUPPORT_P2P_GO_PS */
+
 	/* attempt to attach to the dongle */
 	if (!(dhdsdio_probe_attach(bus, osh, sdh, regsva, devid))) {
 		DHD_ERROR(("%s: dhdsdio_probe_attach failed\n", __FUNCTION__));
@@ -7297,8 +7309,6 @@ dhdsdio_probe(uint16 venid, uint16 devid, uint16 bus_no, uint16 slot,
 	DHD_ERROR(("%s : the lock is released.\n", __FUNCTION__));
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)) */
 #endif 
-
-	init_waitqueue_head(&bus->bus_sleep);
 
 	return bus;
 
@@ -8160,19 +8170,22 @@ dhdsdio_suspend(void *context)
 	int ret = 0;
 
 	dhd_bus_t *bus = (dhd_bus_t*)context;
+#ifdef SUPPORT_P2P_GO_PS
 	int wait_time = 0;
 	if (bus->idletime > 0) {
 		wait_time = msecs_to_jiffies(bus->idletime * dhd_watchdog_ms);
 	}
-
+#endif /* SUPPORT_P2P_GO_PS */
 	ret = dhd_os_check_wakelock(bus->dhd);
-	if ((ret) && (bus->dhd->up)) {
+#ifdef SUPPORT_P2P_GO_PS
+	if ((ret) && (bus->dhd->up) && (bus->dhd->op_mode != DHD_FLAG_HOSTAP_MODE)) {
 		if (wait_event_timeout(bus->bus_sleep, bus->sleeping, wait_time) == 0) {
 			if (!bus->sleeping) {
 				return 1;
 			}
 		}
 	}
+#endif /* SUPPORT_P2P_GO_PS */
 	return ret;
 }
 

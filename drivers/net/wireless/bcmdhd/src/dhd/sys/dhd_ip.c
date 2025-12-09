@@ -1,7 +1,7 @@
 /*
  * IP Packet Parser Module.
  *
- * Copyright (C) 1999-2015, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -1292,7 +1292,6 @@ dhd_tcpack_hold(dhd_pub_t *dhdp, void *pkt, int ifidx)
 			jiffies + msecs_to_jiffies(dhdp->tcpack_sup_delay));
 		tcpack_sup_mod->tcpack_info_cnt++;
 	} else {
-        hold = FALSE;
 		DHD_TRACE(("%s %d: No empty tcp ack info tbl\n",
 			__FUNCTION__, __LINE__));
 	}

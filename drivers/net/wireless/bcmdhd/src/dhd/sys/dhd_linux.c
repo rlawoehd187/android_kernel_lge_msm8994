@@ -2,7 +2,7 @@
  * Broadcom Dongle Host Driver (DHD), Linux-specific network interface
  * Basically selected code segments from usb-cdc.c and usb-rndis.c
  *
- * Copyright (C) 1999-2015, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -22,7 +22,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_linux.c 543294 2015-03-24 06:10:31Z $
+ * $Id: dhd_linux.c 674875 2016-12-13 05:00:12Z $
  */
 
 #include <typedefs.h>
@@ -166,10 +166,12 @@ extern bool ap_fw_loaded;
 #endif /* CUSTOMER_HW4 */
 
 #ifdef ENABLE_ADAPTIVE_SCHED
-//         
+//LGE_Patch
 #if defined(CONFIG_MACH_MSM8992_P1) || defined(CONFIG_MACH_MSM8992_PPLUS) || defined(CONFIG_MACH_MSM8992_P1A4WP)
 #define DEFAULT_CPUFREQ_THRESH         800000    /* threshold frequency : 800000 = 800MHz */
 #elif defined(CONFIG_MACH_MSM8992_PPLUS)
+#define DEFAULT_CPUFREQ_THRESH		 800000	/* threshold frequency : 800000 = 800MHz */
+#elif defined(CONFIG_MACH_MSM8992_SJR)
 #define DEFAULT_CPUFREQ_THRESH		 800000	/* threshold frequency : 800000 = 800MHz */
 #else
 #define DEFAULT_CPUFREQ_THRESH		1000000	/* threshold frequency : 1000000 = 1GHz */
@@ -2073,6 +2075,7 @@ _dhd_set_multicast_list(dhd_info_t *dhd, int ifidx)
 	 * were trying to set some addresses and dongle rejected it...
 	 */
 
+#if !defined(MANUAL_ALL_MCAST_PKTS)
 	buflen = sizeof("allmulti") + sizeof(allmulti);
 	if (!(buf = MALLOC(dhd->pub.osh, buflen))) {
 		DHD_ERROR(("%s: out of memory for allmulti\n", dhd_ifname(&dhd->pub, ifidx)));
@@ -2101,7 +2104,7 @@ _dhd_set_multicast_list(dhd_info_t *dhd, int ifidx)
 	}
 
 	MFREE(dhd->pub.osh, buf, buflen);
-
+#endif
 	/* Finally, pick up the PROMISC flag as well, like the NIC driver does */
 
 #ifdef MCAST_LIST_ACCUMULATION
@@ -3330,13 +3333,14 @@ dhd_watchdog_thread(void *data)
 				time_lapse = jiffies - jiffies_at_start;
 
 				/* Reschedule the watchdog */
-				if (dhd->wd_timer_valid)
+				if (dhd->wd_timer_valid) {
 					mod_timer(&dhd->timer,
 					    jiffies +
 					    msecs_to_jiffies(dhd_watchdog_ms) -
 					    min(msecs_to_jiffies(dhd_watchdog_ms), time_lapse));
-					DHD_GENERAL_UNLOCK(&dhd->pub, flags);
 				}
+				DHD_GENERAL_UNLOCK(&dhd->pub, flags);
+			}
 		} else {
 			break;
 	}
@@ -3447,7 +3451,7 @@ dhd_dpc_thread(void *data)
 #if defined(CUSTOMER_HW4)
 					resched_cnt++;
 					if (resched_cnt > MAX_RESCHED_CNT) {
-						DHD_INFO(("%s Calling msleep to"
+						DHD_ERROR(("%s Calling msleep to"
 							"let other processes run. \n",
 							__FUNCTION__));
 						dhd->pub.dhd_bug_on = true;
@@ -4895,8 +4899,8 @@ dhd_init_logstrs_array(dhd_event_log_t *temp)
 	int num_fmts = 0;
 	uint32 i = 0;
 	int error = 0;
-	set_fs(KERNEL_DS);
 	fs = get_fs();
+	set_fs(KERNEL_DS);
 	filep = filp_open(logstrs_path, O_RDONLY, 0);
 	if (IS_ERR(filep)) {
 		DHD_ERROR(("Failed to open the file logstrs.bin in %s",  __FUNCTION__));
@@ -5852,7 +5856,9 @@ static int dhd_preinit_proc(dhd_pub_t *dhd, int ifidx, char *name, char *value)
 			memcpy(cspec.country_abbrev, value, WLC_CNTRY_BUF_SZ);
 			memcpy(cspec.ccode, value, WLC_CNTRY_BUF_SZ);
 			get_customized_country_code(dhd->info->adapter,
-				(char *)&cspec.country_abbrev, &cspec);
+				(char *)&cspec.country_abbrev, &cspec,
+				dhd->dhd_cflags);
+
 			memcpy(cspec.country_abbrev, cspec.ccode, WLC_CNTRY_BUF_SZ);
 		}
 		memset(smbuf, 0, sizeof(smbuf));
@@ -6818,7 +6824,6 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 #ifdef GSCAN_SUPPORT
 		setbit(eventmask_msg->mask, WLC_E_PFN_GSCAN_FULL_RESULT);
 		setbit(eventmask_msg->mask, WLC_E_PFN_SCAN_COMPLETE);
-		setbit(eventmask_msg->mask, WLC_E_PFN_SWC);
 #endif /* GSCAN_SUPPORT */
 #ifdef BT_WIFI_HANDOVER
 		setbit(eventmask_msg->mask, WLC_E_BT_WIFI_HANDOVER_REQ);
@@ -8771,6 +8776,18 @@ dhd_dev_get_feature_set_matrix(struct net_device *dev, int *num)
 	return ret;
 }
 
+int
+dhd_dev_set_nodfs(struct net_device *dev, u32 nodfs)
+{
+	dhd_info_t *dhd = DHD_DEV_INFO(dev);
+
+	if (nodfs)
+		dhd->pub.dhd_cflags |= WLAN_PLAT_NODFS_FLAG;
+	else
+		dhd->pub.dhd_cflags &= ~WLAN_PLAT_NODFS_FLAG;
+	return 0;
+}
+
 #ifdef PNO_SUPPORT
 /* Linux wrapper to call common dhd_pno_stop_for_ssid */
 int
@@ -8949,14 +8966,6 @@ int dhd_dev_pno_enable_full_scan_result(struct net_device *dev, bool real_time_f
 	return (dhd_pno_enable_full_scan_result(&dhd->pub, real_time_flag));
 }
 
-/* Linux wrapper to call common dhd_handle_swc_evt */
-void * dhd_dev_swc_scan_event(struct net_device *dev, const void  *data, int *send_evt_bytes)
-{
-	dhd_info_t *dhd = *(dhd_info_t **)netdev_priv(dev);
-
-	return (dhd_handle_swc_evt(&dhd->pub, data, send_evt_bytes));
-}
-
 /* Linux wrapper to call common dhd_handle_hotlist_scan_evt */
 void * dhd_dev_hotlist_scan_event(struct net_device *dev,
       const void  *data, int *send_evt_bytes, hotlist_type_t type)
@@ -9093,7 +9102,8 @@ void dhd_get_customized_country_code(struct net_device *dev, char *country_iso_c
 	wl_country_t *cspec)
 {
 	dhd_info_t *dhd = DHD_DEV_INFO(dev);
-	get_customized_country_code(dhd->adapter, country_iso_code, cspec);
+	get_customized_country_code(dhd->adapter, country_iso_code, cspec,
+				    dhd->pub.dhd_cflags);
 }
 void dhd_bus_country_set(struct net_device *dev, wl_country_t *cspec, bool notify)
 {
@@ -9331,10 +9341,10 @@ int dhd_os_wake_lock_timeout(dhd_pub_t *pub)
 #ifdef CONFIG_HAS_WAKELOCK
 		if (dhd->wakelock_rx_timeout_enable)
 			wake_lock_timeout(&dhd->wl_rxwake,
-				msecs_to_jiffies(dhd->wakelock_rx_timeout_enable));
+				msecs_to_jiffies(dhd->wakelock_rx_timeout_enable)/4);
 		if (dhd->wakelock_ctrl_timeout_enable)
 			wake_lock_timeout(&dhd->wl_ctrlwake,
-				msecs_to_jiffies(dhd->wakelock_ctrl_timeout_enable));
+				msecs_to_jiffies(dhd->wakelock_ctrl_timeout_enable)/4);
 #endif
 		dhd->wakelock_rx_timeout_enable = 0;
 		dhd->wakelock_ctrl_timeout_enable = 0;
